@@ -1,0 +1,57 @@
+flight_controller_interface:
+  ros__parameters:
+    # Controller Parameters
+    controller:
+      pid_gains:
+        pitch:
+          Kp: 0.25
+          Ki: 0.0
+          Kd: 0.1
+        roll:
+          Kp: 0.25
+          Ki: 0.0
+          Kd: 0.1
+        yaw:
+          Kp: 0.15
+          Ki: 0.0
+          Kd: 0.05
+        thrust:
+          Kp: 1.5
+          Ki: 0.15
+          Kd: 0.5
+      ema:
+        alpha: 0.15 # Exponential moving average factor for smoothing
+    
+    path_planner:
+      default:
+        linear_velocity: 0.4    # Default linear velocity (m/s)
+        angular_velocity: 0.5   # Default angular velocity (rad/s)
+      constraints:
+        min_linear_velocity: 0.1        # Minimum linear velocity (m/s)
+        min_angular_velocity: 0.1       # Minimum angular velocity (rad/s)
+        max_linear_velocity: 1.5        # Maximum linear velocity (m/s)
+        max_angular_velocity: 1.5       # Maximum angular velocity (rad/s)
+      
+    # Safety Parameters
+    safety:
+      check_gcs_timeout: false          # Check for ground control station timeout
+      check_position_timeout: false     # Check for position data timeout
+      check_battery: true               # Check battery status
+      check_geofence: false              # Check for geofence violations
+      battery_threshold: 0.05           # Battery threshold for safety (0-1 scale)
+      gcs_timeout_threshold: 1.0        # Timeout for ground control station input (seconds)
+      position_timeout_threshold: 0.2   # Timeout for position data (seconds)
+      safety_thrust_initial: -0.72      # Initial thrust for safety landing (negative for downward)
+      safety_thrust_final: -0.66        # Final thrust for safety landing (negative for downward)
+      safety_thrustdown_rate: 0.0       # Rate of thrust decrease during safety landing
+      geofence_radius: 20.0             # Geofence radius (meters)
+      geofence_height: 10.0             # Geofence height (meters)
+      do_mode_change_delay: false        # Enable mode change delay
+      mode_change_delay: 5.0            # Mode change delay (seconds)
+
+    # Setup Parameters
+    setup:
+      lidar_offset: 0.177 # Lidar offset for zero height calibration (meters)
+      takeoff_height_: -1.5 # Default takeoff height (meters)
+      motor_speed_min: 0.0 # Motor speed min expected value
+      motor_speed_max: 1000.0 # Motor speed max expected value
