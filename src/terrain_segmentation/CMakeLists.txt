@@ -17,6 +17,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(interfaces REQUIRED)
 
 # Install Python modules
 ament_python_install_package(${PROJECT_NAME})

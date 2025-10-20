@@ -6,6 +6,9 @@
   <maintainer email="mdaro22@student.aau.dk">Magnus</maintainer>
   <license>Apache-2.0</license>
 
+
+
+
   <!-- Build tool dependencies -->
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
@@ -14,6 +17,7 @@
   <depend>rclcpp</depend>
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
+  <depend>interfaces</depend>
   <depend>cv_bridge</depend>
 
   <!-- Python dependencies -->
