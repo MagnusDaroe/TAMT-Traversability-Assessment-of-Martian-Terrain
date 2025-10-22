@@ -13,6 +13,9 @@ class dataset():
 
 if __name__ == '__main__':
 
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
     # Store images for plotting later
     depth_images = []
     normal_ground_truth_images = []
@@ -20,7 +23,7 @@ if __name__ == '__main__':
 
     for i in range(1,7):
         # if you want to use your own data, please modify rgb_image, depth_image, camParam and use_size correspondingly.
-        depth_image = np.load(f'DIODE_dataset/depth/depth_{i}.npy')
+        depth_image = np.load(os.path.join(script_dir, f'DIODE_dataset/depth/depth_{i}.npy'))
         # Remove the single channel dimension if present
         if depth_image.ndim == 3:
             depth_image = depth_image.squeeze(axis=2)
@@ -28,7 +31,7 @@ if __name__ == '__main__':
         oriSize = (oriWidth, oriHeight)
 
         # Load ground truth normal image
-        normal_gt = np.load(f'DIODE_dataset/normal_ground_truth/normal_gt_{i}.npy')
+        normal_gt = np.load(os.path.join(script_dir, f'DIODE_dataset/normal_ground_truth/normal_gt_{i}.npy'))
         # Remove single channel dimension if present
         if normal_gt.ndim == 4:
             normal_gt = normal_gt.squeeze()
@@ -49,7 +52,9 @@ if __name__ == '__main__':
         normal_image = np.transpose(normal_image, [1, 2, 0])
         
         # Save as PNG (converted to uint8 in [0, 255] range for visualization)
-        cv2.imwrite(os.path.join('images', f'normal_{i}.png'), cv2.cvtColor(255*(1+normal_image)/2, cv2.COLOR_RGB2BGR).astype(np.uint8))
+        images_dir = os.path.join(script_dir, 'images')
+        os.makedirs(images_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(images_dir, f'normal_{i}.png'), cv2.cvtColor(255*(1+normal_image)/2, cv2.COLOR_RGB2BGR).astype(np.uint8))
         
         # Store in original float32 [-1, 1] range for accurate comparison with ground truth
         depth_images.append(depth_image)
@@ -87,6 +92,6 @@ if __name__ == '__main__':
         axes[i, 2].axis('off')
     
     plt.tight_layout()
-    plt.savefig('images/depth_normal_comparison.png', dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(images_dir, 'depth_normal_comparison.png'), dpi=150, bbox_inches='tight')
     plt.show()
-    print("Comparison plot saved to 'images/depth_normal_comparison.png'")
+    print(f"Comparison plot saved to '{os.path.join(images_dir, 'depth_normal_comparison.png')}'")
