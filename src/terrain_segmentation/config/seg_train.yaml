@@ -1,0 +1,86 @@
+# seg_train.yaml - Configuration for YOLO Segmentation Training
+
+# Training mode: 'train', 'search_hyperparameters', or 'search_hyperparameters_then_train_best'
+training_mode: 'train'  # Options: 'train', 'search_hyperparameters', 'search_hyperparameters_then_train_best'
+
+# Model configuration
+model:
+  type: 'yolo11n-seg.pt'  # Options: yolo11n-seg.pt, yolo11s-seg.pt, yolo11m-seg.pt, yolo11l-seg.pt, yolo11x-seg.pt (Do not include v in the name)
+  pretrained: true  # Use pretrained weights
+
+# Output configuration
+output:
+  project_name: 'terrain_segmentation'
+  experiment_name: 'exp'  # Experiment name
+  save_dir: '~/models'  # Directory to save model experiments from ros2 workspace
+  exist_ok: true  # Allow overwriting existing experiments
+  verbose: true  # Verbose output
+
+# Dataset configuration
+dataset:
+  path: '/home/daroe/tamt/dataset/AI4MARS_YOLO_sample_100'  # Path to dataset
+  yaml: 'data.yaml'  # Relative to dataset path or absolute path
+  train_split: 0.7  # Percentage of data for training
+  val_split: 0.2  # Percentage of data for validation
+  test_split: 0.1  # Percentage of data for testing
+
+# Training hyperparameters
+training:
+  epochs: 100
+  batch_size: 16
+  imgsz: 640  # Image size for training
+  patience: 50  # Early stopping patience
+  save_period: 10  # Save checkpoint every N epochs
+  
+  # Optimizer settings
+  optimizer: 'SGD'  # Options: 'SGD', 'Adam', 'AdamW', 'RMSProp'
+  lr0: 0.01  # Initial learning rate
+  lrf: 0.01  # Final learning rate (lr0 * lrf)
+  momentum: 0.937  # SGD momentum/Adam beta1
+  weight_decay: 0.0005  # Optimizer weight decay
+  warmup_epochs: 3.0  # Warmup epochs
+  warmup_momentum: 0.8  # Warmup initial momentum
+  warmup_bias_lr: 0.1  # Warmup initial bias lr
+  
+  # Loss weights
+  box: 7.5  # Box loss gain
+  cls: 0.5  # Class loss gain
+  dfl: 1.5  # DFL loss gain
+
+# Hyperparameter tuning configuration
+hyperparameter_tuning:
+  iterations: 30  # Number of tuning iterations
+  search_space:
+    # Learning rate
+    lr0: [1e-5, 1e-1]
+    lrf: [0.01, 1.0]
+    
+    # Optimizer parameters
+    momentum: [0.6, 0.98]
+    weight_decay: [0.0, 0.001]
+    warmup_epochs: [0.0, 5.0]
+    warmup_momentum: [0.0, 0.95]
+    
+    # Loss weights
+    box: [0.02, 0.2]
+    cls: [0.2, 4.0]
+
+# Hardware configuration
+hardware:
+  device: '-1'  # Device to use: -1 (most idle GPU), 0, 1, 2, etc., 'cpu', or [0,1] for multi-GPU
+
+# Validation configuration
+validation:
+  val: true  # Validate during training
+  plots: true  # Save training plots
+  save_json: true  # Save results to JSON
+  save_hybrid: false  # Save hybrid version of labels
+  conf: 0.001  # Confidence threshold for predictions
+  iou: 0.6  # IoU threshold for NMS
+  max_det: 300  # Maximum detections per image
+  half: false  # Use FP16 half-precision inference
+
+# Resume training
+resume:
+  enabled: false  # Resume training from checkpoint
+  checkpoint_path: ''  # Path to checkpoint to resume from

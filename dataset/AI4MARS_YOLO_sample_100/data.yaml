@@ -1,0 +1,15 @@
+# Mars Terrain Semantic Segmentation Dataset (Merged)
+# All train and test data combined - split yourself as needed
+
+path: /home/daroe/tamt/dataset/AI4MARS_YOLO_sample_100
+train: images
+val: images
+
+names:
+  0: soil
+  1: bedrock
+  2: sand
+  3: big_rock
+
+# Note: All files are prefixed with 'train_' or 'test_' to indicate origin
+# You can split this dataset as needed for your training

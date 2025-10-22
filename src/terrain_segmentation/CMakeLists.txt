@@ -25,12 +25,23 @@ ament_python_install_package(${PROJECT_NAME})
 # Install Python executables
 install(PROGRAMS
   scripts/mars_seg.py
+  scripts/train_model.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # Install model files
 install(DIRECTORY models/
   DESTINATION share/${PROJECT_NAME}/models
+)
+
+# Install configuration files
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
+# Install launch files
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 # Package is complete
