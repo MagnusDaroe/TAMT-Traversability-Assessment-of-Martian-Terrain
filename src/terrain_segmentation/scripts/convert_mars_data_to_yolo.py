@@ -2,6 +2,7 @@
 """
 Convert Mars terrain dataset from RGB labels to YOLO semantic segmentation format.
 Merges train and test into a single dataset without splits.
+Generates both PNG masks and YOLO text files with polygon coordinates.
 Usage: python convert_mars_to_yolo.py /path/to/dataset
 """
 
@@ -10,6 +11,7 @@ import numpy as np
 from PIL import Image
 from pathlib import Path
 from tqdm import tqdm
+import cv2
 
 
 # RGB to class mapping
@@ -58,6 +60,84 @@ def apply_masks(class_label, rover_mask_path, range_mask_path):
         masked_label[range_mask == 1] = 255
     
     return masked_label
+
+
+def mask_to_yolo_segments(mask, class_id):
+    """
+    Convert a binary mask for a specific class to YOLO polygon format.
+    
+    Args:
+        mask: Binary mask (H, W) where True/1 indicates the class
+        class_id: Integer class ID
+        
+    Returns:
+        List of normalized polygon coordinates [class_id, x1, y1, x2, y2, ...]
+    """
+    # Find contours in the mask
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), 
+        cv2.RETR_EXTERNAL, 
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+    
+    segments = []
+    height, width = mask.shape
+    
+    for contour in contours:
+        # Skip very small contours (noise)
+        if len(contour) < 3:
+            continue
+            
+        # Flatten and normalize coordinates
+        contour = contour.reshape(-1, 2)
+        
+        # Skip if too few points
+        if len(contour) < 3:
+            continue
+        
+        # Normalize to 0-1 range
+        normalized = contour.astype(float)
+        normalized[:, 0] /= width   # x coordinates
+        normalized[:, 1] /= height  # y coordinates
+        
+        # Create YOLO format: class_id x1 y1 x2 y2 ...
+        segment = [class_id] + normalized.flatten().tolist()
+        segments.append(segment)
+    
+    return segments
+
+
+def convert_mask_to_yolo_txt(class_label, output_txt_path):
+    """
+    Convert a class ID mask to YOLO text format.
+    
+    Args:
+        class_label: Numpy array with class IDs
+        output_txt_path: Path to output .txt file
+    """
+    # Get unique class values (excluding background/255)
+    unique_classes = np.unique(class_label)
+    unique_classes = unique_classes[(unique_classes < 255) & (unique_classes >= 0)]
+    
+    all_segments = []
+    
+    # Process each class
+    for class_id in unique_classes:
+        # Create binary mask for this class
+        class_mask = (class_label == class_id).astype(np.uint8)
+        
+        # Convert to YOLO segments
+        segments = mask_to_yolo_segments(class_mask, int(class_id))
+        all_segments.extend(segments)
+    
+    # Write to file
+    with open(output_txt_path, 'w') as f:
+        for segment in all_segments:
+            # Format: class_id x1 y1 x2 y2 x3 y3 ...
+            line = ' '.join(map(str, segment))
+            f.write(line + '\n')
+    
+    return len(all_segments) > 0
 
 
 def process_split(split_name, labels_dir, images_base, output_labels_dir, output_images_dir, stats, max_files=None):
@@ -121,9 +201,13 @@ def process_split(split_name, labels_dir, images_base, output_labels_dir, output
             if class_id in stats:
                 stats[class_id] += count_pixels
         
-        # Save converted label with prefix to avoid name collisions
-        output_path = output_labels_dir / f"{split_name}_{base_name}.png"
-        Image.fromarray(class_label, mode='L').save(output_path)
+        # Save converted label PNG with prefix
+        output_png_path = output_labels_dir / f"{split_name}_{base_name}.png"
+        Image.fromarray(class_label, mode='L').save(output_png_path)
+        
+        # Generate and save YOLO text file
+        output_txt_path = output_labels_dir / f"{split_name}_{base_name}.txt"
+        convert_mask_to_yolo_txt(class_label, output_txt_path)
         
         # Copy image
         import shutil
@@ -140,7 +224,8 @@ def convert_dataset(root_dir, max_files=None):
     print(f"Converting dataset in: {root_dir}")
     if max_files:
         print(f"Limiting to {max_files} files per split")
-    print(f"Merging train and test splits into single dataset...\n")
+    print(f"Merging train and test splits into single dataset...")
+    print(f"Generating both PNG masks AND YOLO text files...\n")
     
     # Check for train/test structure
     labels_base = root_dir / 'labels'
@@ -175,7 +260,6 @@ def convert_dataset(root_dir, max_files=None):
     total_skipped = 0
     
     # Process train split
-    # Note: images are in images/edr/, not images/train/edr/ - they're shared!
     train_labels = labels_base / 'train'
     if train_labels.exists():
         print("Processing TRAIN split:")
@@ -217,7 +301,7 @@ def convert_dataset(root_dir, max_files=None):
         print(f"  {class_name} (ID {class_id}): {count:,} pixels ({percentage:.2f}%)")
     
     # Create dataset.yaml
-    yaml_path = output_dir / 'dataset.yaml'
+    yaml_path = output_dir / 'data.yaml'
     with open(yaml_path, 'w') as f:
         f.write(f"# Mars Terrain Semantic Segmentation Dataset (Merged)\n")
         f.write(f"# All train and test data combined - split yourself as needed\n\n")
@@ -231,11 +315,13 @@ def convert_dataset(root_dir, max_files=None):
         f.write(f"# You can split this dataset as needed for your training\n")
     
     print(f"\nOutput saved to: {output_dir}")
-    print(f"  Labels: {output_labels_dir} ({len(list(output_labels_dir.glob('*.png')))} files)")
+    print(f"  Labels (PNG): {output_labels_dir} ({len(list(output_labels_dir.glob('*.png')))} files)")
+    print(f"  Labels (TXT): {output_labels_dir} ({len(list(output_labels_dir.glob('*.txt')))} files)")
     print(f"  Images: {output_images_dir} ({len(list(output_images_dir.glob('*')))} files)")
     print(f"  Config: {yaml_path}")
     print("\nNote: Files are prefixed with 'train_' or 'test_' to indicate their origin.")
-    print("You can now split this dataset however you like for training!")
+    print("Both PNG masks and YOLO text files have been generated!")
+    print("You can now use this dataset for YOLO training!")
 
 
 if __name__ == '__main__':
