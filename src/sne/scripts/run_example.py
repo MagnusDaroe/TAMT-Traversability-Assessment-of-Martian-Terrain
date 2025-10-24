@@ -48,9 +48,10 @@ if __name__ == '__main__':
                                 [0.000000e+00, 7.215377e+02, 1.728540e+02],
                                 [0.000000e+00, 0.000000e+00, 1.000000e+00]], dtype=torch.float32)  # camera parameters
         normal = sne_model(torch.tensor(depth_image.astype(np.float32)/1000), camParam)
+        
         normal_image = normal.cpu().numpy()
         normal_image = np.transpose(normal_image, [1, 2, 0])
-        
+
         # Save as PNG (converted to uint8 in [0, 255] range for visualization)
         images_dir = os.path.join(script_dir, 'images')
         os.makedirs(images_dir, exist_ok=True)
@@ -66,7 +67,7 @@ if __name__ == '__main__':
     
     # Plot depth, ground truth normals, and computed normals side by side
     fig, axes = plt.subplots(6, 3, figsize=(18, 24))
-    
+
     for i in range(6):
         # Plot depth image
         axes[i, 0].imshow(depth_images[i], cmap='viridis')
@@ -90,7 +91,7 @@ if __name__ == '__main__':
         axes[i, 2].imshow(normal_display)
         axes[i, 2].set_title(f'Computed Normal {i+1}')
         axes[i, 2].axis('off')
-    
+
     plt.tight_layout()
     plt.savefig(os.path.join(images_dir, 'depth_normal_comparison.png'), dpi=150, bbox_inches='tight')
     plt.show()

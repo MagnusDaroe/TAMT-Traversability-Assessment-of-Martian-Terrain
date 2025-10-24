@@ -19,8 +19,6 @@ class SNE(nn.Module):
         Z = depth   # h, w
         Y = Z.mul((v_map - camParam[1,2])) / camParam[0,0]  # h, w
         X = Z.mul((u_map - camParam[0,2])) / camParam[0,0]  # h, w
-        Z[Y <= 0] = 0
-        Y[Y <= 0] = 0
         Z[torch.isnan(Z)] = 0
         D = torch.div(torch.ones(h, w), Z)  # h, w
 
