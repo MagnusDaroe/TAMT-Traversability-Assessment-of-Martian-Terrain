@@ -25,6 +25,8 @@ find_package(ament_index_cpp REQUIRED)
 include_directories(include)
 #include_directories(${OpenCV_INCLUDE_DIRS})
 
+
+
 # Create the C++ executable
 add_executable(surface_normal_estimator 
   src/surface_normal_estimator.cpp
@@ -61,6 +63,14 @@ install(TARGETS
   depth_publisher
   DESTINATION lib/${PROJECT_NAME}
 )
+
+# Install Python scripts
+install(PROGRAMS
+  scripts/image_saver.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+##### Install DIRECTORIES #####
 
 # Install DIODE dataset separately
 install(DIRECTORY

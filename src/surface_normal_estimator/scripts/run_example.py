@@ -15,6 +15,9 @@ if __name__ == '__main__':
 
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Path to the DIODE dataset (depth and normals)
+    depth_dir = os.path.join(os.path.dirname(script_dir), 'DIODE_dataset')
 
     # Store images for plotting later
     depth_images = []
@@ -23,7 +26,7 @@ if __name__ == '__main__':
 
     for i in range(1,7):
         # if you want to use your own data, please modify rgb_image, depth_image, camParam and use_size correspondingly.
-        depth_image = np.load(os.path.join(script_dir, f'DIODE_dataset/depth/depth_{i}.npy'))
+        depth_image = np.load(os.path.join(depth_dir, 'depth', f'depth_{i}.npy'))
         # Remove the single channel dimension if present
         if depth_image.ndim == 3:
             depth_image = depth_image.squeeze(axis=2)
@@ -31,7 +34,7 @@ if __name__ == '__main__':
         oriSize = (oriWidth, oriHeight)
 
         # Load ground truth normal image
-        normal_gt = np.load(os.path.join(script_dir, f'DIODE_dataset/normal_ground_truth/normal_gt_{i}.npy'))
+        normal_gt = np.load(os.path.join(depth_dir, 'normal_ground_truth', f'normal_gt_{i}.npy'))
         # Remove single channel dimension if present
         if normal_gt.ndim == 4:
             normal_gt = normal_gt.squeeze()
@@ -66,9 +69,9 @@ if __name__ == '__main__':
     print(f"Computed normals range: [{np.min(normal_images):.3f}, {np.max(normal_images):.3f}]")
     
     # Plot depth, ground truth normals, and computed normals side by side
-    fig, axes = plt.subplots(6, 3, figsize=(18, 24))
+    fig, axes = plt.subplots(4, 3, figsize=(18, 24))
 
-    for i in range(6):
+    for i in range(4):
         # Plot depth image
         axes[i, 0].imshow(depth_images[i], cmap='viridis')
         axes[i, 0].set_title(f'Depth {i+1}')

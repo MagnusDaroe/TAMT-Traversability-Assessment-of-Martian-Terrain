@@ -16,7 +16,10 @@
   <depend>interfaces</depend>
   <depend>geometry_msgs</depend>
   <depend>ament_index_cpp</depend>
-  <!-- <depend>cv_bridge</depend> -->
+  <depend>cv_bridge</depend>
+
+  <!-- ROS 2 Python dependencies -->
+  <depend>rclpy</depend>
 
   <!-- System dependencies -->
   <!-- <depend>libopencv-dev</depend> -->
