@@ -27,7 +27,7 @@ dataset:
 # Training hyperparameters
 training:
   epochs: 2
-  batch_size: 16
+  batch_size: 4
   imgsz: 640  # Image size for training
   patience: 50  # Early stopping patience
   save_period: 10  # Save checkpoint every N epochs

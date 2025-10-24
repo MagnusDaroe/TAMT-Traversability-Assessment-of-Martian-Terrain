@@ -1,0 +1,1 @@
+ros2 service call /yolo_trainer/start_training std_srvs/srv/Trigger
