@@ -30,9 +30,9 @@ install(PROGRAMS
 )
 
 # Install model files
-install(DIRECTORY models/
-  DESTINATION share/${PROJECT_NAME}/models
-)
+# install(DIRECTORY models/
+# DESTINATION share/${PROJECT_NAME}/models
+# )
 
 # Install configuration files
 install(DIRECTORY config/

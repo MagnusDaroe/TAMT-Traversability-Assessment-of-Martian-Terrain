@@ -12,16 +12,37 @@ public:
     : Node("surface_normal_estimation")
     {
         // ROS 2 QoS settings
-        rclcpp::QoS qos(10);
-        qos.reliability(rclcpp::ReliabilityPolicy::BestEffort);
-        qos.durability(rclcpp::DurabilityPolicy::Volatile);
+        rclcpp::QoS qos(rclcpp::KeepLast(10));
+        qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
+        qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+
+        // Subscribe to sync_depth topic
+        depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            "/sync_depth",
+            qos,
+            std::bind(&SurfaceNormalEstimation::imageCallback, this, std::placeholders::_1)
+        );
+
+        // Publisher for raw surface normals (for computation)
+        normal_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+            "/surface_normals", qos);
         
-        RCLCPP_INFO(get_logger(), "SurfaceNormalEstimation node ready");
+        // Publisher for visualization normals (for RViz)
+        normal_viz_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+            "/surface_normals_viz", qos);
+
+        RCLCPP_INFO(get_logger(), "SurfaceNormalEstimation node ready, listening to /sync_depth");
     }
 
 private:
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr normal_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr normal_viz_pub_;
+
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
+        RCLCPP_INFO(get_logger(), "Received depth image: %dx%d", msg->width, msg->height);
+        
         // Extract depth data from the message
         int height = msg->height;
         int width = msg->width;
@@ -29,22 +50,66 @@ private:
         // Assuming depth image is 32FC1 (float depth values)
         const float* depth_data = reinterpret_cast<const float*>(msg->data.data());
 
-        // Convert to 2D vector
-        depth.resize(height, std::vector<float>(width));
+        // Declare and convert to 2D vector locally
+        std::vector<std::vector<float>> depth(height, std::vector<float>(width));
         for (int i = 0; i < height; ++i) {
             for (int j = 0; j < width; ++j) {
                 depth[i][j] = depth_data[i * width + j];
             }
         }
 
-        // Set dimensions
-        h = height;
-        w = width;
-
         // Call SNE method
         auto normals = SNE(depth, height, width);
 
-        RCLCPP_INFO(get_logger(), "Processed depth image: %dx%d", width, height);
+        // ===== PUBLISH RAW NORMALS (32FC3) for computation =====
+        auto normal_msg = sensor_msgs::msg::Image();
+        normal_msg.header = msg->header;
+        normal_msg.header.stamp = this->now();
+        normal_msg.height = height;
+        normal_msg.width = width;
+        normal_msg.encoding = "32FC3";  // 3-channel float (nx, ny, nz)
+        normal_msg.is_bigendian = false;
+        normal_msg.step = width * 3 * sizeof(float);
+        
+        // Flatten normals into 1D array
+        normal_msg.data.resize(height * width * 3 * sizeof(float));
+        float* data_ptr = reinterpret_cast<float*>(normal_msg.data.data());
+        for (int i = 0; i < height; ++i) {
+            for (int j = 0; j < width; ++j) {
+                int idx = (i * width + j) * 3;
+                data_ptr[idx + 0] = normals[0][i][j];  // nx
+                data_ptr[idx + 1] = normals[1][i][j];  // ny
+                data_ptr[idx + 2] = normals[2][i][j];  // nz
+            }
+        }
+        
+        normal_pub_->publish(normal_msg);
+
+        // ===== PUBLISH VISUALIZATION NORMALS (RGB8) for RViz =====
+        auto viz_msg = sensor_msgs::msg::Image();
+        viz_msg.header = msg->header;
+        viz_msg.header.stamp = this->now();
+        viz_msg.height = height;
+        viz_msg.width = width;
+        viz_msg.encoding = "rgb8";
+        viz_msg.is_bigendian = false;
+        viz_msg.step = width * 3;
+        
+        // Convert normals from [-1, 1] to [0, 255]
+        viz_msg.data.resize(height * width * 3);
+        uint8_t* viz_ptr = viz_msg.data.data();
+        for (int i = 0; i < height; ++i) {
+            for (int j = 0; j < width; ++j) {
+                int idx = (i * width + j) * 3;
+                viz_ptr[idx + 0] = static_cast<uint8_t>(255 * (normals[0][i][j] + 1.0f) / 2.0f);  // R = nx
+                viz_ptr[idx + 1] = static_cast<uint8_t>(255 * (normals[1][i][j] + 1.0f) / 2.0f);  // G = ny
+                viz_ptr[idx + 2] = static_cast<uint8_t>(255 * (normals[2][i][j] + 1.0f) / 2.0f);  // B = nz
+            }
+        }
+        
+        normal_viz_pub_->publish(viz_msg);
+
+        RCLCPP_INFO(get_logger(), "Published raw and visualization normals: %dx%d", width, height);
     }
     
     std::vector<std::vector<std::vector<float>>> SNE(const std::vector<std::vector<float>>& depth_image, int height, int width)
@@ -52,6 +117,15 @@ private:
         // Input: depth_image - 2D array (height x width)
         // Input: camParam - 3x3 camera intrinsic matrix
         // Output: 3-channel surface normal map (3 x height x width)
+
+        RCLCPP_DEBUG(get_logger(), "Surface normal estimation started");
+
+        // Declare camera parameters locally
+        std::array<std::array<float, 3>, 3> camParam = {{
+            {7.215377e+02f, 0.000000e+00f, 6.095593e+02f},
+            {0.000000e+00f, 7.215377e+02f, 1.728540e+02f},
+            {0.000000e+00f, 0.000000e+00f, 1.000000e+00f}
+        }};
 
         int h = height;
         int w = width;
@@ -74,8 +148,8 @@ private:
 
         for (int i = 0; i < h; ++i) {
             for (int j = 0; j < w; ++j) {
-                Y[i][j] = Z[i][j] * (v_map[i][j] - camParam[1][2]) / camParam[0][0];
-                X[i][j] = Z[i][j] * (u_map[i][j] - camParam[0][2]) / camParam[0][0];
+                Y[i][j] = Z[i][j] * (v_map[i][j] - camParam[1][2]) / camParam[1][1];  // Use fy, not fx
+                X[i][j] = Z[i][j] * (u_map[i][j] - camParam[0][2]) / camParam[0][0];  // This one is correct
                 if (std::isnan(Z[i][j])) Z[i][j] = 0;
                 D[i][j] = (Z[i][j] != 0) ? 1.0f / Z[i][j] : 0.0f;
             }
@@ -202,11 +276,6 @@ private:
         // Return 3-channel normal map as [nx, ny, nz]
         return {nx, ny, nz};
     }
-    
-    
-    
-    
-    // Member variables
     
 };
 

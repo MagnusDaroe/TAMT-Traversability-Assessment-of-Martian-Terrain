@@ -15,6 +15,7 @@
   <depend>sensor_msgs</depend> 
   <depend>interfaces</depend>
   <depend>geometry_msgs</depend>
+  <depend>ament_index_cpp</depend>
   <!-- <depend>cv_bridge</depend> -->
 
   <!-- System dependencies -->

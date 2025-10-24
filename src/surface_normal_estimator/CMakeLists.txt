@@ -18,6 +18,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(interfaces REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 #find_package(OpenCV REQUIRED)
 
 # Include directories
@@ -37,6 +38,18 @@ ament_target_dependencies(surface_normal_estimator
   cv_bridge
 )
 
+# Create the depth_publisher executable
+add_executable(depth_publisher 
+  src/depth_publisher.cpp
+)
+
+# Add dependencies for depth_publisher executable
+ament_target_dependencies(depth_publisher
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+)
+
 # Link OpenCV libraries
 target_link_libraries(surface_normal_estimator
   ${OpenCV_LIBRARIES}
@@ -45,7 +58,15 @@ target_link_libraries(surface_normal_estimator
 # Install C++ executables
 install(TARGETS
   surface_normal_estimator
+  depth_publisher
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install DIODE dataset separately
+install(DIRECTORY
+  DIODE_dataset
+  DESTINATION share/${PROJECT_NAME}
+  USE_SOURCE_PERMISSIONS
 )
 
 # Install launch files (if you have them)
