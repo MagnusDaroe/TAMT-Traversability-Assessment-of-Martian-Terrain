@@ -23,7 +23,7 @@ def main():
     # Load the image
     # OpenCV loads as BGR, convert to RGB for matplotlib
     image_bgr = cv2.imread(image_path)
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     
     # Display the image
     plt.figure(figsize=(12, 9))
