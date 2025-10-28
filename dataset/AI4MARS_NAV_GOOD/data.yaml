@@ -1,7 +1,7 @@
 # Mars Terrain Semantic Segmentation Dataset (Merged)
 # All train and test data combined - split yourself as needed
 
-path: /home/daroe/tamt/dataset/AI4MARS_NAV_GOOD
+path: /home/spacerob/tamt/dataset/AI4MARS_NAV_GOOD
 train: images
 val: images
 

@@ -1,0 +1,10 @@
+path: /home/spacerob/tamt/dataset/AI4MARS_NAV_GOOD_split
+train: images/train
+val: images/val
+names:
+  0: soil
+  1: bedrock
+  2: sand
+  3: big_rock
+test: images/test
+nc: 4

@@ -1,458 +1,321 @@
 #!/usr/bin/env python3
+"""
+Dataset Splitter for YOLO Format
+Splits images and labels into train/val/test sets while maintaining the directory structure.
+"""
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-from std_srvs.srv import Trigger
-from ultralytics import YOLO
 import os
+import shutil
+import random
 import yaml
-import threading
 from pathlib import Path
-from ament_index_python.packages import get_package_share_directory
+from typing import Tuple, List
+import argparse
 
 
-class YOLOTrainerNode(Node):
-    def __init__(self):
-        super().__init__('yolo_trainer_node')
+class DatasetSplitter:
+    def __init__(self, dataset_path: str, train_split: float = 0.7, 
+                 val_split: float = 0.2, test_split: float = 0.1, seed: int = 42):
+        """
+        Initialize the dataset splitter.
         
-        # Declare parameter for config file
-        self.declare_parameter('config_file', 'seg_train.yaml')
-        config_file = self.get_parameter('config_file').value
+        Args:
+            dataset_path: Path to the dataset root directory
+            train_split: Percentage of data for training (0.0-1.0)
+            val_split: Percentage of data for validation (0.0-1.0)
+            test_split: Percentage of data for testing (0.0-1.0)
+            seed: Random seed for reproducibility
+        """
+        self.original_dataset_path = Path(dataset_path)
         
-        # Load configuration
-        self.config = self.load_config(config_file)
+        # Create the new split dataset path
+        parent_dir = self.original_dataset_path.parent
+        original_name = self.original_dataset_path.name
+        self.dataset_path = parent_dir / f"{original_name}_split"
         
-        # Training state
-        self.is_training = False
-        self.training_thread = None
-        self.model = None
-        self.best_hyperparameters = None
+        self.train_split = train_split
+        self.val_split = val_split
+        self.test_split = test_split
+        self.seed = seed
         
-        # Publishers
-        self.status_pub = self.create_publisher(String, 'yolo_trainer/status', 10)
+        # Validate splits
+        total = train_split + val_split + test_split
+        if abs(total - 1.0) > 0.001:
+            raise ValueError(f"Splits must sum to 1.0, got {total}")
         
-        # Services
-        self.start_training_srv = self.create_service(
-            Trigger, 
-            'yolo_trainer/start_training', 
-            self.start_training_callback
-        )
-        self.stop_training_srv = self.create_service(
-            Trigger, 
-            'yolo_trainer/stop_training', 
-            self.stop_training_callback
-        )
+        # Set random seed
+        random.seed(seed)
         
-        # Timer for status updates
-        self.status_timer = self.create_timer(5.0, self.publish_status)
+    def find_images_and_labels(self) -> Tuple[List[Path], List[Path]]:
+        """Find all images and their corresponding labels in the dataset."""
+        # Common image extensions
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
         
-        self.get_logger().info('YOLO Trainer Node initialized')
-        self.log_config()
+        # Look for images directory in the ORIGINAL dataset
+        images_dir = self.original_dataset_path / 'images'
+        labels_dir = self.original_dataset_path / 'labels'
         
-    def load_config(self, config_file):
-        """Load configuration from YAML file"""
-        try:
-            # Try to find config in package share directory
-            package_share = get_package_share_directory('terrain_segmentation')
-            config_path = os.path.join(package_share, 'config', config_file)
-            
-            if not os.path.exists(config_path):
-                # Try absolute path
-                config_path = config_file
-                
-            if not os.path.exists(config_path):
-                self.get_logger().error(f"Config file not found: {config_path}")
-                raise FileNotFoundError(f"Config file not found: {config_path}")
-            
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            self.get_logger().info(f"Loaded config from: {config_path}")
-            return config
-            
-        except Exception as e:
-            self.get_logger().error(f"Failed to load config: {str(e)}")
-            raise
-    
-    def validate_dataset(self, data_yaml_path):
-        """Validate that the dataset and its components exist"""
-        # Check if data.yaml exists
-        if not os.path.exists(data_yaml_path):
-            raise FileNotFoundError(f"Dataset YAML not found: {data_yaml_path}")
+        if not images_dir.exists():
+            raise ValueError(f"Images directory not found: {images_dir}")
+        if not labels_dir.exists():
+            raise ValueError(f"Labels directory not found: {labels_dir}")
         
-        self.get_logger().info(f"Found dataset YAML: {data_yaml_path}")
+        # Find all image files (recursively to handle subdirectories)
+        image_files = []
+        for ext in image_extensions:
+            image_files.extend(images_dir.rglob(f"*{ext}"))
         
-        # Load and validate data.yaml contents
-        try:
-            with open(data_yaml_path, 'r') as f:
-                data_config = yaml.safe_load(f)
-            
-            # Check for required fields
-            if 'path' not in data_config:
-                raise ValueError(f"Dataset YAML missing 'path' field: {data_yaml_path}")
-            
-            # Get dataset root path
-            dataset_root = data_config['path']
-            if not os.path.isabs(dataset_root):
-                # If relative, make it relative to the yaml file location
-                yaml_dir = os.path.dirname(data_yaml_path)
-                dataset_root = os.path.join(yaml_dir, dataset_root)
-            
-            dataset_root = os.path.expanduser(dataset_root)
-            
-            if not os.path.exists(dataset_root):
-                raise FileNotFoundError(f"Dataset root directory not found: {dataset_root}")
-            
-            self.get_logger().info(f"Found dataset root: {dataset_root}")
-            
-            # Check for train/val/test directories
-            required_splits = []
-            if 'train' in data_config:
-                required_splits.append(('train', data_config['train']))
-            if 'val' in data_config:
-                required_splits.append(('val', data_config['val']))
-            
-            if not required_splits:
-                raise ValueError(f"Dataset YAML must contain at least 'train' field: {data_yaml_path}")
-            
-            for split_name, split_path in required_splits:
-                if not os.path.isabs(split_path):
-                    full_split_path = os.path.join(dataset_root, split_path)
-                else:
-                    full_split_path = split_path
-                
-                full_split_path = os.path.expanduser(full_split_path)
-                
-                if not os.path.exists(full_split_path):
-                    raise FileNotFoundError(
-                        f"Dataset split '{split_name}' not found: {full_split_path}\n"
-                        f"Expected path from dataset root: {dataset_root}"
-                    )
-                
-                # Check if directory contains any images
-                if os.path.isdir(full_split_path):
-                    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
-                    images = [f for f in os.listdir(full_split_path) 
-                             if f.lower().endswith(image_extensions)]
-                    
-                    if not images:
-                        self.get_logger().warn(
-                            f"Warning: No images found in {split_name} directory: {full_split_path}"
-                        )
-                    else:
-                        self.get_logger().info(
-                            f"Found {len(images)} images in {split_name} split"
-                        )
-                
-            # Check for class names
-            if 'names' not in data_config:
-                raise ValueError(f"Dataset YAML missing 'names' field: {data_yaml_path}")
-            
-            num_classes = len(data_config['names'])
-            self.get_logger().info(f"Dataset contains {num_classes} classes: {list(data_config['names'].values())}")
-            
-            self.get_logger().info("✓ Dataset validation passed")
-            return True
-            
-        except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML format in {data_yaml_path}: {str(e)}")
-        except Exception as e:
-            raise Exception(f"Dataset validation failed: {str(e)}")
-    
-    def log_config(self):
-        """Log important configuration parameters"""
-        self.get_logger().info('=== Configuration ===')
-        self.get_logger().info(f'Training mode: {self.config["training_mode"]}')
-        self.get_logger().info(f'Model: {self.config["model"]["type"]}')
-        self.get_logger().info(f'Dataset: {self.config["dataset"]["path"]}')
-        self.get_logger().info(f'Epochs: {self.config["training"]["epochs"]}')
-        self.get_logger().info(f'Batch size: {self.config["training"]["batch_size"]}')
-        self.get_logger().info(f'Image size: {self.config["training"]["imgsz"]}')
-        self.get_logger().info(f'Device: {self.config["hardware"]["device"]}')
+        if not image_files:
+            raise ValueError(f"No images found in {images_dir}")
         
-        if 'search_hyperparameters' in self.config['training_mode']:
-            self.get_logger().info(f'Tuning iterations: {self.config["hyperparameter_tuning"]["iterations"]}')
-    
-    def start_training_callback(self, request, response):
-        if self.is_training:
-            response.success = False
-            response.message = "Training is already in progress"
-            self.get_logger().warn("Training already in progress")
-            return response
+        # Find corresponding label files
+        valid_pairs = []
+        missing_labels = []
         
-        # Start training in a separate thread
-        self.training_thread = threading.Thread(target=self.train_model)
-        self.training_thread.start()
-        
-        response.success = True
-        response.message = "Training started successfully"
-        self.get_logger().info("Training started")
-        return response
-    
-    def stop_training_callback(self, request, response):
-        if not self.is_training:
-            response.success = False
-            response.message = "No training is currently in progress"
-            self.get_logger().warn("No training to stop")
-            return response
-        
-        response.success = True
-        response.message = "Training stop requested (will complete current epoch)"
-        self.get_logger().warn("Training stop requested - will complete current epoch")
-        return response
-    
-    def train_model(self):
-        try:
-            self.is_training = True
+        for img_path in image_files:
+            # Get relative path from images directory
+            rel_path = img_path.relative_to(images_dir)
             
-            # Determine training mode
-            mode = self.config['training_mode']
+            # Construct label path (change extension to .txt)
+            label_path = labels_dir / rel_path.with_suffix('.txt')
             
-            if mode == 'train':
-                self.perform_training()
-            elif mode == 'search_hyperparameters':
-                self.tune_hyperparameters()
-            elif mode == 'search_hyperparameters_then_train_best':
-                self.tune_hyperparameters()
-                if self.best_hyperparameters:
-                    self.get_logger().info("Starting training with best hyperparameters...")
-                    self.perform_training(use_best_params=True)
-                else:
-                    self.get_logger().error("No best hyperparameters found, skipping training")
+            if label_path.exists():
+                valid_pairs.append((img_path, label_path))
             else:
-                raise ValueError(f"Unknown training mode: {mode}")
-                
-        except Exception as e:
-            self.get_logger().error(f"Training failed: {str(e)}")
-            import traceback
-            self.get_logger().error(traceback.format_exc())
-            status_msg = String()
-            status_msg.data = f"Training failed: {str(e)}"
-            self.status_pub.publish(status_msg)
+                missing_labels.append(img_path)
         
-        finally:
-            self.is_training = False
+        if missing_labels:
+            print(f"⚠️  Warning: {len(missing_labels)} images have no corresponding labels")
+            if len(missing_labels) <= 10:
+                for img in missing_labels:
+                    print(f"   - {img.name}")
+        
+        if not valid_pairs:
+            raise ValueError("No valid image-label pairs found")
+        
+        print(f"✓ Found {len(valid_pairs)} valid image-label pairs")
+        return valid_pairs
     
-    def perform_training(self, use_best_params=False):
-        """Perform normal training"""
-        self.get_logger().info("Starting normal training...")
+    def split_data(self, pairs: List[Tuple[Path, Path]]) -> Tuple[List, List, List]:
+        """Split the data into train/val/test sets."""
+        # Shuffle the pairs
+        pairs_copy = pairs.copy()
+        random.shuffle(pairs_copy)
         
-        # Load model
-        model_type = self.config['model']['type']
-        if self.config['model']['pretrained']:
-            self.model = YOLO(model_type)
-            self.get_logger().info(f"Loaded pretrained model: {model_type}")
+        total = len(pairs_copy)
+        train_end = int(total * self.train_split)
+        val_end = train_end + int(total * self.val_split)
+        
+        train_pairs = pairs_copy[:train_end]
+        val_pairs = pairs_copy[train_end:val_end]
+        test_pairs = pairs_copy[val_end:]
+        
+        print(f"\n📊 Split Statistics:")
+        print(f"   Train: {len(train_pairs)} images ({len(train_pairs)/total*100:.1f}%)")
+        print(f"   Val:   {len(val_pairs)} images ({len(val_pairs)/total*100:.1f}%)")
+        print(f"   Test:  {len(test_pairs)} images ({len(test_pairs)/total*100:.1f}%)")
+        
+        return train_pairs, val_pairs, test_pairs
+    
+    def create_split_dataset_directory(self):
+        """Create the new split dataset directory structure."""
+        if self.dataset_path.exists():
+            print(f"⚠️  Warning: Split dataset already exists at {self.dataset_path}")
+            response = input("Do you want to overwrite it? (yes/no): ")
+            if response.lower() != 'yes':
+                raise ValueError("Operation cancelled by user")
+            shutil.rmtree(self.dataset_path)
+        
+        # Create the base directory
+        self.dataset_path.mkdir(parents=True, exist_ok=True)
+        
+        # Copy data.yaml if it exists in the original
+        original_yaml = self.original_dataset_path / 'data.yaml'
+        if original_yaml.exists():
+            shutil.copy2(original_yaml, self.dataset_path / 'data.yaml')
+        
+        print(f"✓ Created split dataset directory: {self.dataset_path}")
+    
+    def create_split_directories(self):
+        """Create the train/val/test directory structure."""
+        for split in ['train', 'val', 'test']:
+            (self.dataset_path / 'images' / split).mkdir(parents=True, exist_ok=True)
+            (self.dataset_path / 'labels' / split).mkdir(parents=True, exist_ok=True)
+        print("✓ Created split directories")
+    
+    def copy_files(self, pairs: List[Tuple[Path, Path]], split_name: str):
+        """Copy image-label pairs to the appropriate split directory."""
+        for img_path, label_path in pairs:
+            # Destination paths
+            dest_img = self.dataset_path / 'images' / split_name / img_path.name
+            dest_label = self.dataset_path / 'labels' / split_name / label_path.name
+            
+            # Copy files
+            shutil.copy2(img_path, dest_img)
+            shutil.copy2(label_path, dest_label)
+        
+        print(f"✓ Copied {len(pairs)} files to {split_name} split")
+    
+    def backup_original_data(self):
+        """Backup original images and labels directories."""
+        images_dir = self.dataset_path / 'images'
+        labels_dir = self.dataset_path / 'labels'
+        
+        backup_images = self.dataset_path / 'images_original_backup'
+        backup_labels = self.dataset_path / 'labels_original_backup'
+        
+        # Only backup if not already backed up
+        if not backup_images.exists() and not backup_labels.exists():
+            print("📦 Creating backup of original data...")
+            shutil.copytree(images_dir, backup_images)
+            shutil.copytree(labels_dir, backup_labels)
+            print("✓ Backup created")
         else:
-            model_yaml = model_type.replace('.pt', '.yaml')
-            self.model = YOLO(model_yaml)
-            self.get_logger().info(f"Loaded model architecture: {model_yaml}")
-        
-        # Prepare data path
-        dataset_config = self.config['dataset']
-        data_yaml_path = dataset_config['yaml']
-        if not os.path.isabs(data_yaml_path):
-            dataset_path = os.path.expanduser(dataset_config['path'])
-            data_yaml_path = os.path.join(dataset_path, data_yaml_path)
-        
-        # Validate dataset before training
-        self.get_logger().info("Validating dataset...")
-        self.validate_dataset(data_yaml_path)
-        
-        # Prepare save directory
-        save_dir = os.path.expanduser(self.config['output']['save_dir'])
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # Parse device
-        device = self.parse_device(self.config['hardware']['device'])
-        
-        # Build training arguments
-        train_args = self.build_training_args(data_yaml_path, device, save_dir)
-        
-        # Override with best hyperparameters if available
-        if use_best_params and self.best_hyperparameters:
-            self.get_logger().info("Using best hyperparameters from tuning")
-            train_args.update(self.best_hyperparameters)
-            train_args['name'] = train_args['name'] + '_best'
-        
-        self.get_logger().info(f"Starting training with {len(train_args)} parameters")
-        
-        # Train the model
-        results = self.model.train(**train_args)
-        
-        self.get_logger().info("Training completed successfully!")
-        self.get_logger().info(f"Model saved to: {results.save_dir}")
-        
-        # Publish completion status
-        status_msg = String()
-        status_msg.data = f"Training completed. Model saved to: {results.save_dir}"
-        self.status_pub.publish(status_msg)
+            print("ℹ️  Backup already exists, skipping")
     
-    def tune_hyperparameters(self):
-        """Perform hyperparameter tuning"""
-        self.get_logger().info("Starting hyperparameter tuning...")
+    def update_data_yaml(self):
+        """Update or create the data.yaml file with correct paths."""
+        yaml_path = self.dataset_path / 'data.yaml'
         
-        # Load model
-        model_type = self.config['model']['type']
-        self.model = YOLO(model_type)
-        self.get_logger().info(f"Loaded model for tuning: {model_type}")
-        
-        # Prepare data path
-        dataset_config = self.config['dataset']
-        data_yaml_path = dataset_config['yaml']
-        if not os.path.isabs(data_yaml_path):
-            dataset_path = os.path.expanduser(dataset_config['path'])
-            data_yaml_path = os.path.join(dataset_path, data_yaml_path)
-        
-        # Validate dataset before tuning
-        self.get_logger().info("Validating dataset...")
-        self.validate_dataset(data_yaml_path)
-        
-        # Parse device
-        device = self.parse_device(self.config['hardware']['device'])
-        
-        # Prepare save directory
-        save_dir = os.path.expanduser(self.config['output']['save_dir'])
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # Perform tuning
-        tuning_config = self.config['hyperparameter_tuning']
-        iterations = tuning_config['iterations']
-        
-        self.get_logger().info(f"Running {iterations} tuning iterations...")
-        self.get_logger().info(f"Search space: {tuning_config['search_space']}")
-        
-        # Build tuning arguments
-        tune_args = {
-            'data': data_yaml_path,
-            'epochs': self.config['training']['epochs'],
-            'iterations': iterations,
-            'device': device,
-            'project': os.path.join(save_dir, self.config['output']['project_name']),
-            'name': self.config['output']['experiment_name'] + '_tune',
-            'exist_ok': self.config['output']['exist_ok'],
-            'verbose': self.config['output']['verbose'],
-            'imgsz': self.config['training']['imgsz'],
-            'batch': self.config['training']['batch_size'],
-        }
-        
-        # Add search space
-        tune_args.update(tuning_config['search_space'])
-        
-        results = self.model.tune(**tune_args)
-        
-        self.get_logger().info("Hyperparameter tuning completed!")
-        self.get_logger().info(f"Results saved to: {results.save_dir}")
-        
-        # Store best hyperparameters
-        if hasattr(results, 'best_params'):
-            self.best_hyperparameters = results.best_params
-            self.get_logger().info(f"Best hyperparameters: {self.best_hyperparameters}")
-        
-        # Publish completion status
-        status_msg = String()
-        status_msg.data = f"Tuning completed. Results saved to: {results.save_dir}"
-        self.status_pub.publish(status_msg)
-    
-    def build_training_args(self, data_path, device, save_dir):
-        """Build dictionary of training arguments from config"""
-        cfg = self.config
-        
-        args = {
-            # Basic settings
-            'data': data_path,
-            'epochs': cfg['training']['epochs'],
-            'batch': cfg['training']['batch_size'],
-            'imgsz': cfg['training']['imgsz'],
-            'device': device,
-            'patience': cfg['training']['patience'],
-            'save_period': cfg['training']['save_period'],
-            
-            # Optimizer settings
-            'optimizer': cfg['training']['optimizer'],
-            'lr0': cfg['training']['lr0'],
-            'lrf': cfg['training']['lrf'],
-            'momentum': cfg['training']['momentum'],
-            'weight_decay': cfg['training']['weight_decay'],
-            'warmup_epochs': cfg['training']['warmup_epochs'],
-            'warmup_momentum': cfg['training']['warmup_momentum'],
-            'warmup_bias_lr': cfg['training']['warmup_bias_lr'],
-            
-            # Loss weights
-            'box': cfg['training']['box'],
-            'cls': cfg['training']['cls'],
-            'dfl': cfg['training']['dfl'],
-            
-            # Output
-            'project': os.path.join(save_dir, cfg['output']['project_name']),
-            'name': cfg['output']['experiment_name'],
-            'exist_ok': cfg['output']['exist_ok'],
-            'verbose': cfg['output']['verbose'],
-            
-            # Validation
-            'val': cfg['validation']['val'],
-            'plots': cfg['validation']['plots'],
-            'save_json': cfg['validation']['save_json'],
-            'save_hybrid': cfg['validation']['save_hybrid'],
-            'conf': cfg['validation']['conf'],
-            'iou': cfg['validation']['iou'],
-            'max_det': cfg['validation']['max_det'],
-            'half': cfg['validation']['half'],
-        }
-        
-        # Add resume if enabled
-        if cfg['resume']['enabled'] and cfg['resume']['checkpoint_path']:
-            checkpoint_path = os.path.expanduser(cfg['resume']['checkpoint_path'])
-            if os.path.exists(checkpoint_path):
-                args['resume'] = checkpoint_path
-                self.get_logger().info(f"Resuming from checkpoint: {checkpoint_path}")
-            else:
-                self.get_logger().warn(f"Checkpoint not found: {checkpoint_path}, starting fresh")
-        
-        return args
-    
-    def parse_device(self, device):
-        """Parse device configuration"""
-        if device == '-1':
-            return -1  # Most idle GPU
-        elif isinstance(device, str) and ',' in device:
-            return [int(d.strip()) for d in device.split(',')]
-        elif device == 'cpu':
-            return 'cpu'
+        # Read existing yaml if it exists
+        if yaml_path.exists():
+            with open(yaml_path, 'r') as f:
+                data = yaml.safe_load(f)
         else:
-            try:
-                return int(device)
-            except:
-                return device
+            data = {}
+        
+        # Update paths - use relative paths from the dataset root
+        # The 'path' key should point to the dataset root directory
+        # YOLO will append train/val/test to this path
+        data['path'] = str(self.dataset_path.resolve())  # Use absolute path
+        data['train'] = 'images/train'
+        data['val'] = 'images/val'
+        data['test'] = 'images/test'
+        
+        # Preserve or set defaults for nc and names
+        if 'nc' not in data:
+            data['nc'] = 4  # Default from your config
+        
+        # Handle names - convert to dictionary format if it's a list
+        if 'names' not in data:
+            # Default class names as dictionary
+            data['names'] = {
+                0: 'soil',
+                1: 'bedrock',
+                2: 'sand',
+                3: 'big_rock'
+            }
+        elif isinstance(data['names'], list):
+            # Convert list to dictionary
+            data['names'] = {i: name for i, name in enumerate(data['names'])}
+        
+        # Write updated yaml
+        with open(yaml_path, 'w') as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        
+        print(f"✓ Updated {yaml_path}")
+        print(f"\ndata.yaml contents:")
+        with open(yaml_path, 'r') as f:
+            print(f.read())
     
-    def publish_status(self):
-        status_msg = String()
-        if self.is_training:
-            mode = self.config['training_mode']
-            status_msg.data = f"Mode: {mode} - Training in progress..."
-        else:
-            status_msg.data = "Idle - ready to train"
-        self.status_pub.publish(status_msg)
-    
-    def cleanup(self):
-        if self.training_thread and self.training_thread.is_alive():
-            self.get_logger().info("Waiting for training to complete...")
-            self.training_thread.join(timeout=5.0)
+    def split(self):
+        """Execute the full dataset splitting process."""
+        print(f"\n{'='*60}")
+        print(f"Dataset Splitter")
+        print(f"{'='*60}")
+        print(f"Original dataset: {self.original_dataset_path}")
+        print(f"Split dataset:    {self.dataset_path}")
+        print(f"Splits: Train={self.train_split}, Val={self.val_split}, Test={self.test_split}")
+        print(f"Random seed: {self.seed}")
+        print(f"{'='*60}\n")
+        
+        # Step 1: Find all image-label pairs in original dataset
+        print("Step 1: Finding image-label pairs in original dataset...")
+        pairs = self.find_images_and_labels()
+        
+        # Step 2: Create split dataset directory
+        print("\nStep 2: Creating split dataset directory...")
+        self.create_split_dataset_directory()
+        
+        # Step 3: Split the data
+        print("\nStep 3: Splitting data...")
+        train_pairs, val_pairs, test_pairs = self.split_data(pairs)
+        
+        # Step 4: Create split directories
+        print("\nStep 4: Creating train/val/test directories...")
+        self.create_split_directories()
+        
+        # Step 5: Copy files to split directories
+        print("\nStep 5: Copying files to splits...")
+        self.copy_files(train_pairs, 'train')
+        self.copy_files(val_pairs, 'val')
+        self.copy_files(test_pairs, 'test')
+        
+        # Step 6: Update data.yaml
+        print("\nStep 6: Updating data.yaml...")
+        self.update_data_yaml()
+        
+        print(f"\n{'='*60}")
+        print("✅ Dataset splitting complete!")
+        print(f"{'='*60}")
+        print(f"\nOriginal dataset (unchanged):")
+        print(f"   📁 {self.original_dataset_path}")
+        print(f"\nNew split dataset:")
+        print(f"   📁 {self.dataset_path}")
+        print(f"\nSplit structure:")
+        print(f"   📁 {self.dataset_path / 'images' / 'train'} ({len(train_pairs)} images)")
+        print(f"   📁 {self.dataset_path / 'images' / 'val'} ({len(val_pairs)} images)")
+        print(f"   📁 {self.dataset_path / 'images' / 'test'} ({len(test_pairs)} images)")
+        print(f"\n💡 Update your config to use: {self.dataset_path}")
+        print(f"   dataset_root: {self.dataset_path}")
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = YOLOTrainerNode()
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Split YOLO dataset into train/val/test sets',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage with default 70/20/10 split
+  python split_dataset.py /path/to/dataset
+  
+  # Custom split ratios
+  python split_dataset.py /path/to/dataset --train 0.8 --val 0.15 --test 0.05
+  
+  # With custom seed for reproducibility
+  python split_dataset.py /path/to/dataset --seed 123
+        """
+    )
+    
+    parser.add_argument('dataset_path', type=str,
+                        help='Path to the dataset root directory')
+    parser.add_argument('--train', type=float, default=0.7,
+                        help='Training split ratio (default: 0.7)')
+    parser.add_argument('--val', type=float, default=0.2,
+                        help='Validation split ratio (default: 0.2)')
+    parser.add_argument('--test', type=float, default=0.1,
+                        help='Test split ratio (default: 0.1)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility (default: 42)')
+    
+    args = parser.parse_args()
     
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        node.get_logger().info("Shutting down YOLO Trainer Node...")
-    finally:
-        node.cleanup()
-        node.destroy_node()
-        rclpy.shutdown()
+        splitter = DatasetSplitter(
+            dataset_path=args.dataset_path,
+            train_split=args.train,
+            val_split=args.val,
+            test_split=args.test,
+            seed=args.seed
+        )
+        splitter.split()
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        return 1
+    
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    exit(main())

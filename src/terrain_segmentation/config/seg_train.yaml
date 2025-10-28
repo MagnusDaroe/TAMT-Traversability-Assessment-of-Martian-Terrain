@@ -12,22 +12,19 @@ model:
 output:
   project_name: 'terrain_segmentation'
   experiment_name: 'exp'  # Experiment name
-  save_dir: '~/models'  # Directory to save model experiments from ros2 workspace
+  save_dir: '~/tamt/src/terrain_segmentation/models'  # Directory to save model experiments from ros2 workspace
   exist_ok: true  # Allow overwriting existing experiments
   verbose: true  # Verbose output
 
 # Dataset configuration
 dataset:
-  path: '/home/daroe/tamt/dataset/AI4MARS_YOLO_sample_100'  # Path to dataset
+  path: '/home/spacerob/tamt/dataset/AI4MARS_NAV_GOOD_split'  # Path to dataset
   yaml: 'data.yaml'  # Relative to dataset path or absolute path
-  train_split: 0.7  # Percentage of data for training
-  val_split: 0.2  # Percentage of data for validation
-  test_split: 0.1  # Percentage of data for testing
 
 # Training hyperparameters
 training:
-  epochs: 2
-  batch_size: 4
+  epochs: 20
+  batch_size: 32
   imgsz: 640  # Image size for training
   patience: 50  # Early stopping patience
   save_period: 10  # Save checkpoint every N epochs
