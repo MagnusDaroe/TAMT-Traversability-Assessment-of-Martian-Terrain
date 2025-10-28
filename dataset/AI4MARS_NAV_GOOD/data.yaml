@@ -1,0 +1,12 @@
+# Mars Terrain Semantic Segmentation Dataset (Merged)
+# All train and test data combined - split yourself as needed
+
+path: /home/daroe/tamt/dataset/AI4MARS_NAV_GOOD
+train: images
+val: images
+
+names:
+  0: soil
+  1: bedrock
+  2: sand
+  3: big_rock

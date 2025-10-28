@@ -1,8 +1,6 @@
 #!/bin/bash
-
 # Simple setup script for Ultralytics YOLO environment
 # Usage: ./setup_venv_simple.sh
-
 set -e  # Exit on error
 
 # Colors
@@ -29,6 +27,11 @@ else
     echo -e "${GREEN}✓ Virtual environment created${NC}"
 fi
 
+# Create COLCON_IGNORE file to prevent colcon from scanning venv
+echo "Configuring colcon to ignore virtual environment..."
+touch venv_tamt/COLCON_IGNORE
+echo -e "${GREEN}✓ COLCON_IGNORE created${NC}"
+
 # Activate virtual environment
 source venv_tamt/bin/activate
 echo -e "${GREEN}✓ Virtual environment activated${NC}"
@@ -37,10 +40,14 @@ echo -e "${GREEN}✓ Virtual environment activated${NC}"
 echo "Upgrading pip..."
 pip install --upgrade pip
 
+# Install ROS 2 dependencies with correct versions
+echo "Installing ROS 2 dependencies..."
+pip install empy==3.3.4 catkin_pkg lark
+echo -e "${GREEN}✓ ROS 2 dependencies installed${NC}"
+
 # Install Ultralytics (this will install all dependencies including PyTorch, OpenCV, etc.)
 echo "Installing Ultralytics..."
 pip install ultralytics
-
 echo -e "${GREEN}✓ Ultralytics installed${NC}"
 
 # Test import
@@ -55,7 +62,6 @@ source install/setup.bash 2>/dev/null || true
 source venv_tamt/bin/activate
 echo "✓ Environment activated"
 EOF
-
 chmod +x setup_env.sh
 
 echo ""
