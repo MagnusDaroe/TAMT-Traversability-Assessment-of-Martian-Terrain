@@ -17,7 +17,7 @@ class SNE(nn.Module):
         u_map = u_map.type(torch.float32)
 
         Z = depth   # h, w
-        Y = Z.mul((v_map - camParam[1,2])) / camParam[0,0]  # h, w
+        Y = Z.mul((v_map - camParam[1,2])) / camParam[1,1]  # h, w
         X = Z.mul((u_map - camParam[0,2])) / camParam[0,0]  # h, w
         Z[torch.isnan(Z)] = 0
         D = torch.div(torch.ones(h, w), Z)  # h, w
@@ -75,13 +75,14 @@ class SNE(nn.Module):
 
         nx[torch.isnan(nz)] = 0
         ny[torch.isnan(nz)] = 0
-        nz[torch.isnan(nz)] = -1
+        nz[torch.isnan(nz)] = 0
 
+        # Flips all normals downwards to have consistent orientation (Doesn't matter for AAE because of dot product)
         sign = torch.ones((1,1,h,w), dtype=torch.float32)
-        sign[ny > 0] = -1
-
+        sign[ny < 0] = -1
         nx = torch.mul(nx, sign).squeeze(dim=0)
         ny = torch.mul(ny, sign).squeeze(dim=0)
         nz = torch.mul(nz, sign).squeeze(dim=0)
 
-        return torch.cat([nx, ny, nz], dim=0)
+        #return torch.cat([nx, ny, nz], dim=0)
+        return torch.cat([-nz, nx, ny], dim=0)

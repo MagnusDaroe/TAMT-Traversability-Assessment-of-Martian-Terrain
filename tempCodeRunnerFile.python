@@ -1,6 +1,46 @@
+import os
+from SNE import SNE
+import torchvision.transforms as transforms
+import torch
 import numpy as np
-a = np.array([[1, 2], [3, 4]])
+import cv2
 
-b = np.transpose(a, axes=(0, 1))
-print(a)
-print(b)
+
+class dataset():
+    def __init__(self):
+        self.num_labels = 2
+
+if __name__ == '__main__':
+
+    # if you want to use your own data, please modify rgb_image, depth_image, camParam and use_size correspondingly.
+    rgb_image = cv2.cvtColor(cv2.imread(os.path.join('examples', 'rgb.png')), cv2.COLOR_BGR2RGB)
+    depth_image = cv2.imread(os.path.join('examples', 'depth_u16.png'), cv2.IMREAD_ANYDEPTH)
+    oriHeight, oriWidth, _ = rgb_image.shape
+    oriSize = (oriWidth, oriHeight)
+
+    # resize image to enable sizes divide 32
+    use_size = (1248, 384)
+    rgb_image = cv2.resize(rgb_image, use_size)
+    rgb_image = rgb_image.astype(np.float32) / 255
+
+    # compute normal using SNE
+    sne_model = SNE()
+    camParam = torch.tensor([[7.215377e+02, 0.000000e+00, 6.095593e+02],
+                             [0.000000e+00, 7.215377e+02, 1.728540e+02],
+                             [0.000000e+00, 0.000000e+00, 1.000000e+00]], dtype=torch.float32)  # camera parameters
+    normal = sne_model(torch.tensor(depth_image.astype(np.float32)/1000), camParam)
+    normal_image = normal.cpu().numpy()
+    normal_image = np.transpose(normal_image, [1, 2, 0])
+    cv2.imwrite(os.path.join('examples', 'normal.png'), cv2.cvtColor(255*(1+normal_image)/2, cv2.COLOR_RGB2BGR))
+    normal_image = cv2.resize(normal_image, use_size)
+
+    rgb_image = transforms.ToTensor()(rgb_image).unsqueeze(dim=0)
+    normal_image = transforms.ToTensor()(normal_image).unsqueeze(dim=0)
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 6))
+    plt.imshow((normal_image.squeeze().permute(1, 2, 0).numpy() + 1) / 2)
+    plt.title('Normal Image')
+    plt.axis('off')
+    plt.colorbar()
+    plt.show()
