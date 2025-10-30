@@ -260,10 +260,11 @@ private:
                 if (std::isnan(nz[i][j])) {
                     nx[i][j] = 0;
                     ny[i][j] = 0;
-                    nz[i][j] = -1;
+                    nz[i][j] = 0;
                 }
                 
-                float sign = (ny[i][j] > 0) ? -1.0f : 1.0f;
+                // float sign = (ny[i][j] > 0) ? -1.0f : 1.0f; // z axis out of camera and y downwards
+                float sign = (ny[i][j] < 0) ? -1.0f : 1.0f; // z axis into camera and y upwards
                 nx[i][j] *= sign;
                 ny[i][j] *= sign;
                 nz[i][j] *= sign;
@@ -274,7 +275,8 @@ private:
         RCLCPP_DEBUG(get_logger(), "Surface normal estimation completed");
         
         // Return 3-channel normal map as [nx, ny, nz]
-        return {nx, ny, nz};
+        //return {nx, ny, nz};
+        return {-nz, nx, ny};
     }
     
 };
