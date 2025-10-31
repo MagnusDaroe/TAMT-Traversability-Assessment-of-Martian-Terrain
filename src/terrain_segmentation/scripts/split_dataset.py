@@ -46,10 +46,10 @@ class DatasetSplitter:
         # Set random seed
         random.seed(seed)
         
-    def find_images_and_labels(self) -> Tuple[List[Path], List[Path]]:
-        """Find all images and their corresponding labels in the dataset."""
-        # Common image extensions
-        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+    def find_images_and_labels(self) -> List[Tuple[Path, Path]]:
+        """Find all images and their corresponding .txt labels in the dataset."""
+        # Image extensions (but exclude .png which might be masks in labels dir)
+        image_extensions = {'.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
         
         # Look for images directory in the ORIGINAL dataset
         images_dir = self.original_dataset_path / 'images'
@@ -60,32 +60,34 @@ class DatasetSplitter:
         if not labels_dir.exists():
             raise ValueError(f"Labels directory not found: {labels_dir}")
         
-        # Find all image files (recursively to handle subdirectories)
+        # Find all image files in images directory (case-insensitive)
         image_files = []
         for ext in image_extensions:
-            image_files.extend(images_dir.rglob(f"*{ext}"))
+            # Check both lowercase and uppercase extensions
+            image_files.extend(images_dir.glob(f"*{ext}"))
+            image_files.extend(images_dir.glob(f"*{ext.upper()}"))
         
         if not image_files:
             raise ValueError(f"No images found in {images_dir}")
         
-        # Find corresponding label files
+        # Find corresponding .txt label files
         valid_pairs = []
         missing_labels = []
         
         for img_path in image_files:
-            # Get relative path from images directory
-            rel_path = img_path.relative_to(images_dir)
+            # Get the base filename without extension
+            img_stem = img_path.stem
             
-            # Construct label path (change extension to .txt)
-            label_path = labels_dir / rel_path.with_suffix('.txt')
+            # Look for .txt label (YOLO format)
+            txt_label_path = labels_dir / f"{img_stem}.txt"
             
-            if label_path.exists():
-                valid_pairs.append((img_path, label_path))
+            if txt_label_path.exists():
+                valid_pairs.append((img_path, txt_label_path))
             else:
                 missing_labels.append(img_path)
         
         if missing_labels:
-            print(f"⚠️  Warning: {len(missing_labels)} images have no corresponding labels")
+            print(f"⚠️  Warning: {len(missing_labels)} images have no corresponding .txt labels")
             if len(missing_labels) <= 10:
                 for img in missing_labels:
                     print(f"   - {img.name}")
@@ -94,6 +96,7 @@ class DatasetSplitter:
             raise ValueError("No valid image-label pairs found")
         
         print(f"✓ Found {len(valid_pairs)} valid image-label pairs")
+        
         return valid_pairs
     
     def split_data(self, pairs: List[Tuple[Path, Path]]) -> Tuple[List, List, List]:
@@ -150,7 +153,7 @@ class DatasetSplitter:
             dest_img = self.dataset_path / 'images' / split_name / img_path.name
             dest_label = self.dataset_path / 'labels' / split_name / label_path.name
             
-            # Copy files
+            # Copy files (only image and .txt label, ignore .png masks)
             shutil.copy2(img_path, dest_img)
             shutil.copy2(label_path, dest_label)
         
@@ -195,8 +198,19 @@ class DatasetSplitter:
         # Preserve or set defaults for nc and names
         if 'nc' not in data:
             data['nc'] = 4  # Default from your config
+        
+        # Handle names - convert to dictionary format if it's a list
         if 'names' not in data:
-            data['names'] = ['soil', 'bedrock', 'sand', 'big_rock']
+            # Default class names as dictionary
+            data['names'] = {
+                0: 'soil',
+                1: 'bedrock',
+                2: 'sand',
+                3: 'big_rock'
+            }
+        elif isinstance(data['names'], list):
+            # Convert list to dictionary
+            data['names'] = {i: name for i, name in enumerate(data['names'])}
         
         # Write updated yaml
         with open(yaml_path, 'w') as f:

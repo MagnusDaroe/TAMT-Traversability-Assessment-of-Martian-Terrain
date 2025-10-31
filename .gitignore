@@ -6,3 +6,6 @@ venv_tamt
 dataset/AI4MARS_YOLO/
 dataset/AI4MARS_NAV_GOOD/
 src/terrain_segmentation/models/terrain_segmentation
+dataset/ai4mars_nav
+dataset/ai4mars_nav_split
+

@@ -11,22 +11,22 @@ model:
 # Output configuration
 output:
   project_name: 'terrain_segmentation'
-  experiment_name: 'exp'  # Experiment name
+  experiment_name: 'exp3'  # Experiment name
   save_dir: '~/tamt/src/terrain_segmentation/models'  # Directory to save model experiments from ros2 workspace
   exist_ok: true  # Allow overwriting existing experiments
   verbose: true  # Verbose output
 
 # Dataset configuration
 dataset:
-  path: '/home/spacerob/tamt/dataset/AI4MARS_NAV_GOOD_split'  # Path to dataset
+  path: '/home/spacerob/tamt/dataset/ai4mars_nav_split'  # Path to dataset
   yaml: 'data.yaml'  # Relative to dataset path or absolute path
 
 # Training hyperparameters
 training:
-  epochs: 20
+  epochs: 170
   batch_size: 32
   imgsz: 640  # Image size for training
-  patience: 50  # Early stopping patience
+  patience: 20  # Early stopping patience
   save_period: 10  # Save checkpoint every N epochs
   
   # Optimizer settings
@@ -79,5 +79,5 @@ validation:
 
 # Resume training
 resume:
-  enabled: false  # Resume training from checkpoint
-  checkpoint_path: ''  # Path to checkpoint to resume from
+  enabled: true
+  checkpoint_path: '~/tamt/src/terrain_segmentation/models/terrain_segmentation/exp2/weights/last.pt'
