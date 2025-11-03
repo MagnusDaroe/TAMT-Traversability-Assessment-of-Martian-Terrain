@@ -34,7 +34,7 @@ ament_target_dependencies(publisher_rgb
   cv_bridge
 )
 
-add_executable(publisher_sync_data src/sync_data.cpp)
+add_executable(publisher_sync_data src/sync_node.cpp)
 ament_target_dependencies(publisher_sync_data
   rclcpp
   sensor_msgs
@@ -43,29 +43,10 @@ ament_target_dependencies(publisher_sync_data
   message_filters
 )
 
-add_executable(publisher_sync_data_new src/new_sync_node.cpp)
-ament_target_dependencies(publisher_sync_data_new
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  message_filters
-)
-
-# add_executable(test_node src/test_node.cpp)
-# ament_target_dependencies(test_node
-#   rclcpp
-#   sensor_msgs
-#   cv_bridge
-#   OpenCV
-# )
-
 install(TARGETS
   publisher_depth
   publisher_rgb 
   publisher_sync_data
-  publisher_sync_data_new
-  # test_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
