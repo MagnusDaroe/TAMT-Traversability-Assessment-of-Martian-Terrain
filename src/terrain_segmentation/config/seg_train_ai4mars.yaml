@@ -1,30 +1,29 @@
 # seg_train.yaml - Configuration for YOLO Segmentation Training
-# This example shows TRANSFER LEARNING configuration
 
 # Training mode: 'train', 'search_hyperparameters', or 'search_hyperparameters_then_train_best'
 training_mode: 'train'  # Options: 'train', 'search_hyperparameters', 'search_hyperparameters_then_train_best'
 
 # Model configuration
 model:
-  type: 'yolo11n-seg.pt'  # Options: yolo11n-seg.pt, yolo11s-seg.pt, yolo11m-seg.pt, yolo11l-seg.pt, yolo11x-seg.pt
-  pretrained: true  # Use pretrained weights (ignored if transfer_learning is enabled)
+  type: 'yolo11n-seg.pt'  # Options: yolo11n-seg.pt, yolo11s-seg.pt, yolo11m-seg.pt, yolo11l-seg.pt, yolo11x-seg.pt (Do not include v in the name)
+  pretrained: true  # Use pretrained weights
 
 # Output configuration
 output:
   project_name: 'terrain_segmentation'
-  experiment_name: 'tamt_transfer_2'  # Experiment name (will have '_transfer' appended automatically)
+  experiment_name: 'exp3'  # Experiment name
   save_dir: '~/tamt/src/terrain_segmentation/models'  # Directory to save model experiments from ros2 workspace
   exist_ok: true  # Allow overwriting existing experiments
   verbose: true  # Verbose output
 
 # Dataset configuration
 dataset:
-  path: '/home/spacerob/tamt/dataset/tamt_simulation_3_3500_split'  # Path to NEW dataset
+  path: '/home/spacerob/tamt/dataset/ai4mars_nav_split'  # Path to dataset
   yaml: 'data.yaml'  # Relative to dataset path or absolute path
 
 # Training hyperparameters
 training:
-  epochs: 20  
+  epochs: 170
   batch_size: 32
   imgsz: 640  # Image size for training
   patience: 20  # Early stopping patience
@@ -32,7 +31,7 @@ training:
   
   # Optimizer settings
   optimizer: 'SGD'  # Options: 'SGD', 'Adam', 'AdamW', 'RMSProp'
-  lr0: 0.001  # Lower learning rate for transfer learning (was 0.01)
+  lr0: 0.01  # Initial learning rate
   lrf: 0.01  # Final learning rate (lr0 * lrf)
   momentum: 0.937  # SGD momentum/Adam beta1
   weight_decay: 0.0005  # Optimizer weight decay
@@ -45,12 +44,6 @@ training:
   cls: 0.5  # Class loss gain
   dfl: 1.5  # DFL loss gain
 
-# TRANSFER LEARNING CONFIGURATION
-# Use this to train on new data starting from a previously trained model
-transfer_learning:
-  enabled: true  # Set to true to enable transfer learning
-  model_path: '~/tamt/src/terrain_segmentation/models/adapted_models/exp3_adapted_5class.pt'  # Path to your trained model
-
 # Hyperparameter tuning configuration
 hyperparameter_tuning:
   iterations: 30  # Number of tuning iterations
@@ -58,11 +51,13 @@ hyperparameter_tuning:
     # Learning rate
     lr0: [1e-5, 1e-1]
     lrf: [0.01, 1.0]
+    
     # Optimizer parameters
     momentum: [0.6, 0.98]
     weight_decay: [0.0, 0.001]
     warmup_epochs: [0.0, 5.0]
     warmup_momentum: [0.0, 0.95]
+    
     # Loss weights
     box: [0.02, 0.2]
     cls: [0.2, 4.0]
@@ -82,33 +77,7 @@ validation:
   max_det: 300  # Maximum detections per image
   half: false  # Use FP16 half-precision inference
 
-# Resume training (IGNORED when transfer_learning is enabled)
-# Use this to continue training from where you left off (same experiment)
+# Resume training
 resume:
-  enabled: false  # Set to false when doing transfer learning
+  enabled: true
   checkpoint_path: '~/tamt/src/terrain_segmentation/models/terrain_segmentation/exp2/weights/last.pt'
-
-# ============================================================================
-# CONFIGURATION GUIDE:
-# ============================================================================
-#
-# SCENARIO 1: TRANSFER LEARNING (Train on new data from existing model)
-# - Set transfer_learning.enabled: true
-# - Set transfer_learning.model_path: path to your trained model (best.pt or last.pt)
-# - Set resume.enabled: false
-# - Point dataset.path to your NEW dataset
-# - Consider using a lower learning rate (e.g., lr0: 0.001 instead of 0.01)
-#
-# SCENARIO 2: RESUME TRAINING (Continue same training run)
-# - Set transfer_learning.enabled: false
-# - Set resume.enabled: true
-# - Set resume.checkpoint_path: path to last.pt from interrupted training
-# - Keep the SAME dataset.path
-#
-# SCENARIO 3: TRAIN FROM SCRATCH (New model, new data)
-# - Set transfer_learning.enabled: false
-# - Set resume.enabled: false
-# - Set model.pretrained: true (for pretrained weights) or false (random init)
-# - Point dataset.path to your dataset
-#
-# ============================================================================

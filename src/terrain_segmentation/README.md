@@ -182,3 +182,12 @@ python view_yolo_txt_labels.py /path/to/yolo_format --config geo
 python3 src/terrain_segmentation/scripts/view_yolo_txt_labels.py /home/spacerob/Documents/ai4mars-dataset-merged-0.6/AI4MARS_YOLO/ai4mars_nav
 
 ```
+
+
+
+```bash
+python3 src/terrain_segmentation/scripts/reconfigure_model_output.py \
+  --source ~/tamt/src/terrain_segmentation/models/terrain_segmentation/exp2/weights/best.pt \
+  --target-classes 6 \
+  --output ~/tamt/src/terrain_segmentation/models/adapted_models/exp3_adapted_6class.pt
+  ```

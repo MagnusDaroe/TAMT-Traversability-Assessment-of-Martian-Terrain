@@ -171,6 +171,12 @@ class YOLOTrainerNode(Node):
         self.get_logger().info(f'Image size: {self.config["training"]["imgsz"]}')
         self.get_logger().info(f'Device: {self.config["hardware"]["device"]}')
         
+        # Log transfer learning status
+        if self.config.get('transfer_learning', {}).get('enabled', False):
+            model_path = self.config['transfer_learning'].get('model_path', 'Not specified')
+            self.get_logger().info(f'Transfer Learning: ENABLED')
+            self.get_logger().info(f'Transfer Learning Model: {model_path}')
+        
         if 'search_hyperparameters' in self.config['training_mode']:
             self.get_logger().info(f'Tuning iterations: {self.config["hyperparameter_tuning"]["iterations"]}')
     
@@ -238,13 +244,37 @@ class YOLOTrainerNode(Node):
         """Perform normal training"""
         self.get_logger().info("Starting normal training...")
         
-        # Check if resuming from checkpoint
+        # Check if resuming from checkpoint (continues same training run)
         resume_from_checkpoint = (
             self.config['resume']['enabled'] and 
             self.config['resume']['checkpoint_path']
         )
         
-        if resume_from_checkpoint:
+        # Check if doing transfer learning (starts new training with pretrained weights)
+        transfer_learning = (
+            self.config.get('transfer_learning', {}).get('enabled', False) and
+            self.config.get('transfer_learning', {}).get('model_path')
+        )
+        
+        if resume_from_checkpoint and transfer_learning:
+            self.get_logger().warn(
+                "Both resume and transfer_learning are enabled. "
+                "Resume will be ignored - using transfer learning instead."
+            )
+            resume_from_checkpoint = False
+        
+        if transfer_learning:
+            # Load custom pretrained model for transfer learning
+            model_path = os.path.expanduser(self.config['transfer_learning']['model_path'])
+            if os.path.exists(model_path):
+                self.model = YOLO(model_path)
+                self.get_logger().info(f"✓ Loaded model for transfer learning: {model_path}")
+                self.get_logger().info("✓ Starting FRESH training run with pretrained weights")
+                self.get_logger().info("  (This is transfer learning - not resuming)")
+            else:
+                raise FileNotFoundError(f"Transfer learning model not found: {model_path}")
+        
+        elif resume_from_checkpoint:
             checkpoint_path = os.path.expanduser(self.config['resume']['checkpoint_path'])
             if os.path.exists(checkpoint_path):
                 self.model = YOLO(checkpoint_path)  # Load checkpoint directly
@@ -253,7 +283,7 @@ class YOLOTrainerNode(Node):
                 self.get_logger().warn(f"Checkpoint not found: {checkpoint_path}, loading pretrained model")
                 resume_from_checkpoint = False
         
-        if not resume_from_checkpoint:
+        if not resume_from_checkpoint and not transfer_learning:
             # Load pretrained or fresh model
             model_type = self.config['model']['type']
             if self.config['model']['pretrained']:
@@ -286,6 +316,7 @@ class YOLOTrainerNode(Node):
         train_args = self.build_training_args(data_yaml_path, device, save_dir)
         
         # Only set resume=True if we loaded from checkpoint
+        # DO NOT set resume=True for transfer learning
         if resume_from_checkpoint:
             train_args['resume'] = True  # Just set to True, not the path
         
@@ -294,6 +325,10 @@ class YOLOTrainerNode(Node):
             self.get_logger().info("Using best hyperparameters from tuning")
             train_args.update(self.best_hyperparameters)
             train_args['name'] = train_args['name'] + '_best'
+        
+        # Add suffix for transfer learning experiment name
+        if transfer_learning:
+            train_args['name'] = train_args['name'] + '_transfer'
         
         self.get_logger().info(f"Starting training with {len(train_args)} parameters")
         
@@ -420,14 +455,17 @@ class YOLOTrainerNode(Node):
             'half': cfg['validation']['half'],
         }
         
-        # Add resume if enabled
+        # Add resume if enabled (but not for transfer learning)
         if cfg['resume']['enabled'] and cfg['resume']['checkpoint_path']:
-            checkpoint_path = os.path.expanduser(cfg['resume']['checkpoint_path'])
-            if os.path.exists(checkpoint_path):
-                args['resume'] = checkpoint_path
-                self.get_logger().info(f"Resuming from checkpoint: {checkpoint_path}")
-            else:
-                self.get_logger().warn(f"Checkpoint not found: {checkpoint_path}, starting fresh")
+            # Don't add resume if transfer learning is enabled
+            transfer_learning = cfg.get('transfer_learning', {}).get('enabled', False)
+            if not transfer_learning:
+                checkpoint_path = os.path.expanduser(cfg['resume']['checkpoint_path'])
+                if os.path.exists(checkpoint_path):
+                    args['resume'] = checkpoint_path
+                    self.get_logger().info(f"Resuming from checkpoint: {checkpoint_path}")
+                else:
+                    self.get_logger().warn(f"Checkpoint not found: {checkpoint_path}, starting fresh")
         
         return args
     
