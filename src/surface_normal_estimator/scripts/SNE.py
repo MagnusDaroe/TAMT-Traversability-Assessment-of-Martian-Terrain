@@ -79,10 +79,10 @@ class SNE(nn.Module):
 
         # Flips all normals downwards to have consistent orientation (Doesn't matter for AAE because of dot product)
         sign = torch.ones((1,1,h,w), dtype=torch.float32)
-        sign[ny < 0] = -1
+        sign[ny > 0] = -1
         nx = torch.mul(nx, sign).squeeze(dim=0)
         ny = torch.mul(ny, sign).squeeze(dim=0)
         nz = torch.mul(nz, sign).squeeze(dim=0)
 
-        #return torch.cat([nx, ny, nz], dim=0)
-        return torch.cat([-nz, nx, ny], dim=0)
+        return torch.cat([nx, ny, nz], dim=0) #Original normal output Frame: (X right, Y down, Z forward)
+        #return torch.cat([nz, -nx, -ny], dim=0) #Isaac sim conversion Frame: (X forward, Y left, Z up)

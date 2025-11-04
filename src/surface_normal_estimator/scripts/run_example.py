@@ -76,28 +76,33 @@ if __name__ == '__main__':
         depth_images.append(depth_image)
         normal_ground_truth_images.append(normal_gt)
         normal_images.append(normal_image)
+
+        def compute_aae(gt, pred, eps=1e-8):
+            # compute norms and validity mask
+            n1, n2 = np.linalg.norm(gt, 2, 2), np.linalg.norm(pred, 2, 2)
+            valid = (n1 > eps) & (n2 > eps)
+            
+            # normalize valid normals
+            gt_n = np.zeros_like(gt); pred_n = np.zeros_like(pred)
+            gt_n[valid] = gt[valid] / n1[valid, None]
+            pred_n[valid] = pred[valid] / n2[valid, None]
+            
+            # cosine similarity (use absolute for unoriented)
+            dot = np.sum(gt_n * pred_n, 2)
+            dot = np.clip(np.abs(dot), 0, 1)
+            
+            # angular error in degrees, ignoring invalid pixels
+            ang = np.degrees(np.arccos(dot))
+            ang[~valid] = np.nan
+            return np.nanmean(ang)
+    
+        aae = compute_aae(normal_gt, normal_image)
+        print(f"Average Angular Error (unoriented): {aae:.2f}°")
     
     print(f"Ground truth range: [{np.min(normal_ground_truth_images):.3f}, {np.max(normal_ground_truth_images):.3f}]")
     print(f"Computed normals range: [{np.min(normal_images):.3f}, {np.max(normal_images):.3f}]")
     
-    # Compute average angular error for image 1 (index 0)
-    normal_gt_vec = normal_ground_truth_images[0].reshape(-1, 3)
-    normal_computed_vec = normal_images[0].reshape(-1, 3)
 
-    # Normalize vectors to unit length
-    normal_gt_norm = normal_gt_vec / (np.linalg.norm(normal_gt_vec, axis=1, keepdims=True) + 1e-8)
-    normal_computed_norm = normal_computed_vec / (np.linalg.norm(normal_computed_vec, axis=1, keepdims=True) + 1e-8)
-
-    # Compute dot product and clip to [-1, 1] to avoid numerical errors
-    dot_product = np.sum(normal_gt_norm * normal_computed_norm, axis=1)
-    dot_product = np.clip(dot_product, -1.0, 1.0)
-
-    # Compute angular error in degrees
-    angular_error = np.arccos(dot_product) * (180.0 / np.pi)
-
-    # Compute average angular error
-    avg_angular_error = np.mean(angular_error)
-    print(f"Average angular error for image 1: {avg_angular_error:.2f} degrees")
 
     # Plot depth, ground truth normals, and computed normals side by side
     n = len(depth_images)-2

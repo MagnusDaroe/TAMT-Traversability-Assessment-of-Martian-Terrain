@@ -1,0 +1,66 @@
+{
+  "0": {
+    "class": "BACKGROUND",
+    "color_rgb": [
+      255,
+      76,
+      150
+    ]
+  },
+  "1": {
+    "class": "UNLABELLED",
+    "color_rgb": [
+      231,
+      76,
+      255
+    ]
+  },
+  "2": {
+    "class": "bedrock",
+    "color_rgb": [
+      76,
+      255,
+      225
+    ]
+  },
+  "3": {
+    "class": "hole",
+    "color_rgb": [
+      156,
+      76,
+      255
+    ]
+  },
+  "4": {
+    "class": "sand",
+    "color_rgb": [
+      255,
+      249,
+      76
+    ]
+  },
+  "5": {
+    "class": "loose sand",
+    "color_rgb": [
+      255,
+      183,
+      76
+    ]
+  },
+  "6": {
+    "class": "rocks",
+    "color_rgb": [
+      255,
+      82,
+      76
+    ]
+  },
+  "7": {
+    "class": "soil",
+    "color_rgb": [
+      76,
+      255,
+      177
+    ]
+  }
+}
