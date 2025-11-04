@@ -1,0 +1,35 @@
+costmap_sne:
+  ros__parameters:
+    #! Camera parameters
+    camera:
+      fov_x: 90.0  # Field of view in X direction (degrees)
+      fov_y: 60.0  # Field of view in Y direction (degrees)
+      mounting_angle: 15.0  # Camera mounting angle relative to horizontal (degrees)
+      height: 1.5  # Camera height above ground (meters)
+    
+    #! Rover parameters
+    rover:
+      width: 1.0  # Rover width (meters)
+      length: 1.2  # Rover length (meters)
+      wheelbase: 0.8  # Distance between front and rear axles (meters)
+      track_width: 0.6  # Distance between left and right wheels (meters)
+    
+    #! Class risk parameters
+    # These class risks should be set in the interval from [0-1], where 
+    # it should be specified how much risk is involved with each class. 
+    # Where 0 means that the safety of the rover is totally unaffected by this 
+    # class, and 1 means extremely dangerous.
+    # 
+    # Consider the following when selecting class risks:
+    #   - Damage to wheels 
+    #   - Wear and tear of the body, joints, and motors
+    #   - Surface tracking (Issues of getting stuck/slipping)
+    #   - Energy efficiency
+    #   - Other factors
+    
+    class_risks:
+      soil: 0.2
+      bedrock: 0.1
+      sand: 0.3
+      rocks: 0.9
+      hole: 0.95
