@@ -166,9 +166,9 @@ class YOLOTrainerNode(Node):
         self.get_logger().info(f'Training mode: {self.config["training_mode"]}')
         self.get_logger().info(f'Model: {self.config["model"]["type"]}')
         self.get_logger().info(f'Dataset: {self.config["dataset"]["path"]}')
-        self.get_logger().info(f'Epochs: {self.config["training"]["epochs"]}')
-        self.get_logger().info(f'Batch size: {self.config["training"]["batch_size"]}')
-        self.get_logger().info(f'Image size: {self.config["training"]["imgsz"]}')
+        self.get_logger().info(f'Epochs: {self.config["final_training"]["epochs"]}')
+        self.get_logger().info(f'Batch size: {self.config["final_training"]["batch_size"]}')
+        self.get_logger().info(f'Image size: {self.config["final_training"]["imgsz"]}')
         self.get_logger().info(f'Device: {self.config["hardware"]["device"]}')
         
         # Log transfer learning status
@@ -343,9 +343,33 @@ class YOLOTrainerNode(Node):
         status_msg.data = f"Training completed. Model saved to: {results.save_dir}"
         self.status_pub.publish(status_msg)
     
+    def convert_search_space_to_tuples(self, search_space):
+        """Convert list ranges to tuples for YOLO tuner compatibility"""
+        converted = {}
+        for key, value in search_space.items():
+            if isinstance(value, list) and len(value) == 2:
+                # Convert string numbers to floats if needed, then to tuple
+                try:
+                    min_val = float(value[0]) if isinstance(value[0], str) else value[0]
+                    max_val = float(value[1]) if isinstance(value[1], str) else value[1]
+                    converted[key] = (min_val, max_val)
+                    self.get_logger().info(f"Converted {key}: {value} -> {converted[key]}")
+                except (ValueError, TypeError) as e:
+                    self.get_logger().warn(f"Could not convert {key}: {value}, using as-is. Error: {e}")
+                    converted[key] = tuple(value)
+            else:
+                converted[key] = value
+        return converted
+    
     def tune_hyperparameters(self):
         """Perform hyperparameter tuning"""
         self.get_logger().info("Starting hyperparameter tuning...")
+        
+        # Check if tuning is enabled
+        tuning_config = self.config.get('hyperparameter_tuning', {})
+        if not tuning_config.get('enabled', True):
+            self.get_logger().warn("Hyperparameter tuning is disabled in config, skipping...")
+            return
         
         # Load model
         model_type = self.config['model']['type']
@@ -370,77 +394,142 @@ class YOLOTrainerNode(Node):
         save_dir = os.path.expanduser(self.config['output']['save_dir'])
         os.makedirs(save_dir, exist_ok=True)
         
-        # Perform tuning
-        tuning_config = self.config['hyperparameter_tuning']
-        iterations = tuning_config['iterations']
+        # Get tuning-specific parameters
+        iterations = tuning_config.get('iterations', 30)
+        tuning_epochs = tuning_config.get('epochs', 20)  # Use tuning-specific epochs
+        tuning_batch = tuning_config.get('batch_size', 8)  # Use tuning-specific batch size
         
-        self.get_logger().info(f"Running {iterations} tuning iterations...")
-        self.get_logger().info(f"Search space: {tuning_config['search_space']}")
+        self.get_logger().info("="*60)
+        self.get_logger().info("HYPERPARAMETER TUNING CONFIGURATION")
+        self.get_logger().info("="*60)
+        self.get_logger().info(f"  Iterations: {iterations}")
+        self.get_logger().info(f"  Epochs per iteration: {tuning_epochs}")
+        self.get_logger().info(f"  Batch size: {tuning_batch}")
+        
+        # Build base project path
+        project_path = os.path.join(save_dir, self.config['output']['project_name'])
+        tune_name = self.config['output']['experiment_name'] + '_tune'
         
         # Build tuning arguments
         tune_args = {
             'data': data_yaml_path,
-            'epochs': self.config['training']['epochs'],
+            'epochs': tuning_epochs,  # Use tuning epochs, NOT final training epochs
             'iterations': iterations,
             'device': device,
-            'project': os.path.join(save_dir, self.config['output']['project_name']),
-            'name': self.config['output']['experiment_name'] + '_tune',
+            'project': project_path,
+            'name': tune_name,
             'exist_ok': self.config['output']['exist_ok'],
             'verbose': self.config['output']['verbose'],
-            'imgsz': self.config['training']['imgsz'],
-            'batch': self.config['training']['batch_size'],
+            'imgsz': tuning_config.get('imgsz', 640),
+            'batch': tuning_batch,  # Use tuning batch size, NOT final training batch
         }
         
-        # Add search space
-        tune_args.update(tuning_config['search_space'])
+        # Add custom search space if provided
+        if 'search_space' in tuning_config and tuning_config['search_space']:
+            search_space = self.convert_search_space_to_tuples(tuning_config['search_space'])
+            self.get_logger().info(f"  Custom search space: {len(search_space)} parameters")
+            tune_args['space'] = search_space
+        else:
+            self.get_logger().info("  Using YOLO's built-in search space")
+        
+        self.get_logger().info("="*60)
+        
+        # Store the expected tune directory before calling tune
+        expected_tune_dir = os.path.join(project_path, tune_name)
         
         results = self.model.tune(**tune_args)
         
-        self.get_logger().info("Hyperparameter tuning completed!")
-        self.get_logger().info(f"Results saved to: {results.save_dir}")
+        self.get_logger().info("="*60)
+        self.get_logger().info("HYPERPARAMETER TUNING COMPLETED")
+        self.get_logger().info("="*60)
         
-        # Store best hyperparameters
-        if hasattr(results, 'best_params'):
-            self.best_hyperparameters = results.best_params
-            self.get_logger().info(f"Best hyperparameters: {self.best_hyperparameters}")
+        # Find the actual tune directory (YOLO may have added a suffix)
+        actual_tune_dir = None
+        if os.path.exists(project_path):
+            # Look for directories matching the tune name pattern
+            tune_dirs = [d for d in os.listdir(project_path) 
+                        if d.startswith(tune_name) and os.path.isdir(os.path.join(project_path, d))]
+            if tune_dirs:
+                # Sort and get the most recent one
+                tune_dirs.sort()
+                actual_tune_dir = os.path.join(project_path, tune_dirs[-1])
+                self.get_logger().info(f"Found tune directory: {actual_tune_dir}")
+        
+        # Fall back to expected directory if we couldn't find it
+        if not actual_tune_dir:
+            actual_tune_dir = expected_tune_dir
+        
+        self.get_logger().info(f"Results saved to: {actual_tune_dir}")
+        
+        # Try to read best hyperparameters from the YAML file
+        best_yaml = os.path.join(actual_tune_dir, 'best_hyperparameters.yaml')
+        if os.path.exists(best_yaml):
+            try:
+                with open(best_yaml, 'r') as f:
+                    self.best_hyperparameters = yaml.safe_load(f)
+                self.get_logger().info(f"✓ Loaded best hyperparameters from: {best_yaml}")
+                self.get_logger().info(f"Best hyperparameters: {self.best_hyperparameters}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to load best hyperparameters: {e}")
+                self.best_hyperparameters = None
+        else:
+            self.get_logger().warn(f"Could not find best hyperparameters at: {best_yaml}")
+            # Try to get from results object
+            if results and hasattr(results, 'best_params'):
+                self.best_hyperparameters = results.best_params
+                self.get_logger().info(f"Got best hyperparameters from results object")
+            else:
+                self.best_hyperparameters = None
         
         # Publish completion status
         status_msg = String()
-        status_msg.data = f"Tuning completed. Results saved to: {results.save_dir}"
+        status_msg.data = f"Tuning completed. Results saved to: {actual_tune_dir}"
         self.status_pub.publish(status_msg)
     
     def build_training_args(self, data_path, device, save_dir):
         """Build dictionary of training arguments from config"""
         cfg = self.config
         
+        # Use final_training settings if available, otherwise fall back to training
+        training_cfg = cfg.get('final_training', cfg.get('training', {}))
+        
+        self.get_logger().info("="*60)
+        self.get_logger().info("FINAL TRAINING CONFIGURATION")
+        self.get_logger().info("="*60)
+        self.get_logger().info(f"  Epochs: {training_cfg.get('epochs', 100)}")
+        self.get_logger().info(f"  Batch size: {training_cfg.get('batch_size', 16)}")
+        self.get_logger().info(f"  Image size: {training_cfg.get('imgsz', 640)}")
+        self.get_logger().info(f"  Patience: {training_cfg.get('patience', 50)}")
+        self.get_logger().info("="*60)
+        
         args = {
             # Basic settings
             'data': data_path,
-            'epochs': cfg['training']['epochs'],
-            'batch': cfg['training']['batch_size'],
-            'imgsz': cfg['training']['imgsz'],
+            'epochs': training_cfg.get('epochs', 100),
+            'batch': training_cfg.get('batch_size', 16),
+            'imgsz': training_cfg.get('imgsz', 640),
             'device': device,
-            'patience': cfg['training']['patience'],
-            'save_period': cfg['training']['save_period'],
+            'patience': training_cfg.get('patience', 50),
+            'save_period': training_cfg.get('save_period', 10),
             
             # Optimizer settings
-            'optimizer': cfg['training']['optimizer'],
-            'lr0': cfg['training']['lr0'],
-            'lrf': cfg['training']['lrf'],
-            'momentum': cfg['training']['momentum'],
-            'weight_decay': cfg['training']['weight_decay'],
-            'warmup_epochs': cfg['training']['warmup_epochs'],
-            'warmup_momentum': cfg['training']['warmup_momentum'],
-            'warmup_bias_lr': cfg['training']['warmup_bias_lr'],
+            'optimizer': training_cfg.get('optimizer', 'SGD'),
+            'lr0': training_cfg.get('lr0', 0.01),
+            'lrf': training_cfg.get('lrf', 0.01),
+            'momentum': training_cfg.get('momentum', 0.937),
+            'weight_decay': training_cfg.get('weight_decay', 0.0005),
+            'warmup_epochs': training_cfg.get('warmup_epochs', 3.0),
+            'warmup_momentum': training_cfg.get('warmup_momentum', 0.8),
+            'warmup_bias_lr': training_cfg.get('warmup_bias_lr', 0.1),
             
             # Loss weights
-            'box': cfg['training']['box'],
-            'cls': cfg['training']['cls'],
-            'dfl': cfg['training']['dfl'],
+            'box': training_cfg.get('box', 7.5),
+            'cls': training_cfg.get('cls', 0.5),
+            'dfl': training_cfg.get('dfl', 1.5),
             
             # Output
             'project': os.path.join(save_dir, cfg['output']['project_name']),
-            'name': cfg['output']['experiment_name'],
+            'name': cfg['output']['experiment_name'] + '_final',
             'exist_ok': cfg['output']['exist_ok'],
             'verbose': cfg['output']['verbose'],
             

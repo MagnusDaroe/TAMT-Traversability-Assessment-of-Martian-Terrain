@@ -15,7 +15,8 @@ import argparse
 
 class DatasetSplitter:
     def __init__(self, dataset_path: str, train_split: float = 0.7, 
-                 val_split: float = 0.2, test_split: float = 0.1, seed: int = 42):
+                 val_split: float = 0.2, test_split: float = 0.1, seed: int = 42,
+                 max_images: int = None):
         """
         Initialize the dataset splitter.
         
@@ -25,18 +26,25 @@ class DatasetSplitter:
             val_split: Percentage of data for validation (0.0-1.0)
             test_split: Percentage of data for testing (0.0-1.0)
             seed: Random seed for reproducibility
+            max_images: Maximum number of images to include in the new dataset (None = all images)
         """
         self.original_dataset_path = Path(dataset_path)
         
         # Create the new split dataset path
         parent_dir = self.original_dataset_path.parent
         original_name = self.original_dataset_path.name
-        self.dataset_path = parent_dir / f"{original_name}_split"
+        
+        # Add suffix based on max_images if specified
+        if max_images:
+            self.dataset_path = parent_dir / f"{original_name}_subset_{max_images}"
+        else:
+            self.dataset_path = parent_dir / f"{original_name}_split"
         
         self.train_split = train_split
         self.val_split = val_split
         self.test_split = test_split
         self.seed = seed
+        self.max_images = max_images
         
         # Validate splits
         total = train_split + val_split + test_split
@@ -49,7 +57,7 @@ class DatasetSplitter:
     def find_images_and_labels(self) -> List[Tuple[Path, Path]]:
         """Find all images and their corresponding .txt labels in the dataset."""
         # Image extensions (but exclude .png which might be masks in labels dir)
-        image_extensions = {'.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
+        image_extensions = {'.png','.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
         
         # Look for images directory in the ORIGINAL dataset
         images_dir = self.original_dataset_path / 'images'
@@ -95,7 +103,13 @@ class DatasetSplitter:
         if not valid_pairs:
             raise ValueError("No valid image-label pairs found")
         
-        print(f"✓ Found {len(valid_pairs)} valid image-label pairs")
+        print(f"✓ Found {len(valid_pairs)} valid image-label pairs in original dataset")
+        
+        # Limit to max_images if specified
+        if self.max_images and len(valid_pairs) > self.max_images:
+            random.shuffle(valid_pairs)
+            valid_pairs = valid_pairs[:self.max_images]
+            print(f"✓ Selected {self.max_images} images randomly for the new dataset")
         
         return valid_pairs
     
@@ -228,6 +242,8 @@ class DatasetSplitter:
         print(f"{'='*60}")
         print(f"Original dataset: {self.original_dataset_path}")
         print(f"Split dataset:    {self.dataset_path}")
+        if self.max_images:
+            print(f"Max images:       {self.max_images}")
         print(f"Splits: Train={self.train_split}, Val={self.val_split}, Test={self.test_split}")
         print(f"Random seed: {self.seed}")
         print(f"{'='*60}\n")
@@ -288,6 +304,12 @@ Examples:
   
   # With custom seed for reproducibility
   python split_dataset.py /path/to/dataset --seed 123
+  
+  # Create a subset with only 100 images
+  python split_dataset.py /path/to/dataset --max-images 100
+  
+  # Create a subset with 50 images and custom split
+  python split_dataset.py /path/to/dataset --max-images 50 --train 0.8 --val 0.1 --test 0.1
         """
     )
     
@@ -301,6 +323,8 @@ Examples:
                         help='Test split ratio (default: 0.1)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility (default: 42)')
+    parser.add_argument('--max-images', type=int, default=None,
+                        help='Maximum number of images to include in the new dataset (default: None = all images)')
     
     args = parser.parse_args()
     
@@ -310,7 +334,8 @@ Examples:
             train_split=args.train,
             val_split=args.val,
             test_split=args.test,
-            seed=args.seed
+            seed=args.seed,
+            max_images=args.max_images
         )
         splitter.split()
     except Exception as e:

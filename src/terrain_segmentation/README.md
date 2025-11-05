@@ -191,3 +191,13 @@ python3 src/terrain_segmentation/scripts/reconfigure_model_output.py \
   --target-classes 6 \
   --output ~/tamt/src/terrain_segmentation/models/adapted_models/exp3_adapted_6class.pt
   ```
+
+
+
+
+
+
+
+
+
+  https://y-t-g.github.io/tutorials/yolov8n-add-classes/
