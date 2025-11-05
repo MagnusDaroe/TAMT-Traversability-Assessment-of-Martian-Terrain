@@ -2,17 +2,17 @@
 
 # Model configuration
 model:
-  model_dir: '/home/spacerob/tamt/src/terrain_segmentation/models/terrain_segmentation/tamt_transfer_4_retrain_transfer/weights/best.pt'
+  model_dir: '/home/daroe/tamt/src/terrain_segmentation/models/best.pt'
   device: '0'  # Device to use: 0, 1, 2, etc., 'cpu'
 
 # Dataset configuration
 dataset:
-  path: '/home/spacerob/tamt/dataset/tamt_simulation_2_100_split/images/test'  # Path to test images
+  path: '/home/daroe/tamt/dataset/tamt_simulation_2_100_split/images/test'  # Path to test images
 
 # Inference parameters
 inference:
   conf: 0.25          # Confidence threshold
-  iou: 0.10           # IoU threshold for NMS
+  iou: 0.30           # IoU threshold for NMS
   imgsz: 640          # Input image size
   max_det: 300        # Maximum number of detections per image
   save_dir: '~/inference_results'  # Directory to save results

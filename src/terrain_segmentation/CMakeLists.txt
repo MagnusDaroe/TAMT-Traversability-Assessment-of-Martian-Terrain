@@ -24,8 +24,9 @@ ament_python_install_package(${PROJECT_NAME})
 
 # Install Python executables
 install(PROGRAMS
-  scripts/mars_seg.py
   scripts/train_model.py
+  scripts/test_segmentation.py
+  scripts/segment.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
