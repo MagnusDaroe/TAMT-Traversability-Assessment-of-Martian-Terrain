@@ -13,12 +13,15 @@ find_package(ament_index_cpp REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(geometry_msgs REQUIRED)
+
+include_directories(include)
 
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
-add_executable(publisher_depth src/publisher_depth.cpp)
+add_executable(publisher_depth src/input_nodes/publisher_depth.cpp)
 ament_target_dependencies(publisher_depth
   rclcpp
   sensor_msgs
@@ -26,7 +29,7 @@ ament_target_dependencies(publisher_depth
   cv_bridge
 )
 
-add_executable(publisher_rgb src/publisher_rgb.cpp)
+add_executable(publisher_rgb src/input_nodes/publisher_rgb.cpp)
 ament_target_dependencies(publisher_rgb
   rclcpp
   sensor_msgs
@@ -34,7 +37,16 @@ ament_target_dependencies(publisher_rgb
   cv_bridge
 )
 
-add_executable(publisher_sync_data src/sync_node.cpp)
+add_executable(publisher_campose src/input_nodes/publisher_cam_pose.cpp)
+ament_target_dependencies(publisher_campose
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  geometry_msgs
+)
+
+add_executable(publisher_sync_data src/sync_nodes/sync_node.cpp)
 ament_target_dependencies(publisher_sync_data
   rclcpp
   sensor_msgs
@@ -43,11 +55,28 @@ ament_target_dependencies(publisher_sync_data
   message_filters
 )
 
+add_executable(test_publisher_sync_data src/sync_nodes/test_sync_node.cpp)
+ament_target_dependencies(test_publisher_sync_data
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  message_filters
+  OpenCV
+  geometry_msgs
+)
+
 install(TARGETS
   publisher_depth
   publisher_rgb 
+  publisher_campose
   publisher_sync_data
+  test_publisher_sync_data
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY include/
+  DESTINATION include/
 )
 
 # Install Depth_data directory (source sits under src/) into the package share so it is available at runtime
