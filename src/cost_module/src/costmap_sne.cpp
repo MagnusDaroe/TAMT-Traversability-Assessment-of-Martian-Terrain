@@ -1,6 +1,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/LinearMath/Transform.h>
 #include <cmath>
 #include <vector>
 #include <memory>
@@ -32,20 +35,33 @@ public:
         RCLCPP_INFO(this->get_logger(), "Loaded rover parameters - Width: %.2fm, Length: %.2fm",
                     rover_width_, rover_length_);
         
-        // Subscribe to surface normals topic
-        surface_normals_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/surface_normals",
-            10,
-            std::bind(&CostmapSNE::surfaceNormalsCallback, this, std::placeholders::_1)
-        );
-        
         // Subscribe to synchronized pointcloud topic
         pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/sync_pointcloud",
             10,
             std::bind(&CostmapSNE::pointcloudCallback, this, std::placeholders::_1)
         );
-        
+
+        // Subscribe to synchronized pose topic
+        pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/sync_cam_2_glob_pose",
+            10,
+            std::bind(&CostmapSNE::poseCallback, this, std::placeholders::_1)
+        );
+
+        // Subscribe to surface normals topic
+        surface_normals_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            "/surface_normals",
+            10,
+            std::bind(&CostmapSNE::surfaceNormalsCallback, this, std::placeholders::_1)
+        );
+
+        //TODO Create publisher for costmap
+        // costmap_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+        //     "/sne_costmap",
+        //     10
+        // );
+
         RCLCPP_INFO(this->get_logger(), "CostmapSNE node initialized");
     }
 
@@ -57,6 +73,35 @@ private:
         RCLCPP_DEBUG(this->get_logger(), "Received pointcloud with %d points", msg->width * msg->height);
     }
     
+    void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        // Process camera to global pose
+        RCLCPP_DEBUG(this->get_logger(), "Received camera to global pose at time %.2f", 
+                     msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9);
+
+        // Convert PoseStamped to tf2::Transform
+        tf2::Vector3 translation(
+            msg->pose.position.x,
+            msg->pose.position.y,
+            msg->pose.position.z
+        );
+        
+        tf2::Quaternion rotation(
+            msg->pose.orientation.x,
+            msg->pose.orientation.y,
+            msg->pose.orientation.z,
+            msg->pose.orientation.w
+        );
+        
+        // Create the transformation from camera to global frame
+        cam_to_global_transform_.setOrigin(translation);
+        cam_to_global_transform_.setRotation(rotation);
+        
+        RCLCPP_DEBUG(this->get_logger(), 
+                     "Updated camera to global transform: Translation [%.2f, %.2f, %.2f]",
+                     translation.x(), translation.y(), translation.z());
+    }
+
     void surfaceNormalsCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
         // Validate image format
@@ -66,22 +111,28 @@ private:
             return;
         }
         
-        // Check if we have received a pointcloud
-        if (!sync_pointcloud_)
+        // Check if we have received a sync_pointcloud_ and cam_to_global_transform_
+        if (sync_pointcloud_ && cam_to_global_transform_)
         {
             RCLCPP_WARN(this->get_logger(), "No pointcloud received yet, skipping normal processing");
             return;
         }
-        
+
+        // Normals in camera frame
+        std::vector<float> normals_camera = reinterpret_cast<std::vector<float>>(msg->data);
+
         uint32_t width = msg->width;
         uint32_t height = msg->height;
-        
+
+        // Combine pointcloud with normals
+        std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
+
         // Transform normals to global frame using pointcloud coordinates
-        std::vector<float> normals_global = transformToGlobalFrame(msg->data, width, height);
+        std::vector<float> normals_global = transformToGlobalFrame(points_with_normals, width, height);
         
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
-        std::vector<float> points_with_theta = computePointsWithPolarAngles(normals_global, width, height);
+        std::vector<float> points_with_theta = computePolarAngles(normals_global, width, height);
         
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta, width, height);
@@ -89,60 +140,64 @@ private:
         RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
     }
     
-    std::vector<float> transformToGlobalFrame(const std::vector<uint8_t>& normals_data, 
-                                               uint32_t width, uint32_t height)
+    // Combines pointcloud XYZ coordinates with their corresponding surface normals
+    // Returns a vector with format: [x, y, z, nx, ny, nz] for each point
+    std::vector<float> combinePointcloudWithNormals(const std::vector<float>& normals_camera,
+                                                     uint32_t width, uint32_t height)
     {
-        // Convert byte data to float vector (3 channels: nx, ny, nz)
-        size_t num_pixels = width * height;
-        std::vector<float> normals_global(num_pixels * 3);
+        // Ensure pointcloud size matches normals size
+        if (sync_pointcloud_->width != width || sync_pointcloud_->height != height)
+        {
+            RCLCPP_ERROR(this->get_logger(), 
+                         "Size mismatch! Normals: %dx%d, Pointcloud: %dx%d",
+                         width, height, 
+                         sync_pointcloud_->width, sync_pointcloud_->height);
+            return;
+        }
         
-        // Reinterpret byte data as float (normals in camera frame)
-        const float* normals_camera = reinterpret_cast<const float*>(normals_data.data());
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_normals(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
         
         // Parse pointcloud to get 3D coordinates for each pixel
-        // PointCloud2 data is stored as a flat array with point_step bytes per point
         const uint8_t* pc_data = sync_pointcloud_->data.data();
         uint32_t point_step = sync_pointcloud_->point_step;
         
-        // Calculate rotation matrix based on camera mounting angle
-        // Rotation around Y-axis (pitch) by mounting_angle
-        double angle_rad = mounting_angle_ * M_PI / 180.0;
-        double cos_angle = std::cos(angle_rad);
-        double sin_angle = std::sin(angle_rad);
-        
-        // Process each pixel/normal
+        // Iterate through each point
         for (size_t i = 0; i < num_pixels; ++i)
         {
             // Get 3D coordinates from pointcloud (assuming XYZ fields at offset 0, 4, 8)
             const float* point_ptr = reinterpret_cast<const float*>(pc_data + i * point_step);
-            float x_cam = point_ptr[0];
-            float y_cam = point_ptr[1];
-            float z_cam = point_ptr[2];
+            float x = point_ptr[0];
+            float y = point_ptr[1];
+            float z = point_ptr[2];
             
-            // Get normal vector in camera frame
-            float nx_cam = normals_camera[i * 3 + 0];
-            float ny_cam = normals_camera[i * 3 + 1];
-            float nz_cam = normals_camera[i * 3 + 2];
+            // Get corresponding normal vector from normals_camera
+            float nx = normals_camera[i * 3 + 0];
+            float ny = normals_camera[i * 3 + 1];
+            float nz = normals_camera[i * 3 + 2];
             
-            // Transform normal from camera frame to global frame
-            // Apply rotation matrix (rotation around Y-axis by mounting_angle)
-            // R_y(θ) = [cos(θ)  0  sin(θ)]
-            //          [   0    1    0   ]
-            //          [-sin(θ) 0  cos(θ)]
-            float nx_global = cos_angle * nx_cam + sin_angle * nz_cam;
-            float ny_global = ny_cam;
-            float nz_global = -sin_angle * nx_cam + cos_angle * nz_cam;
-            
-            // Store transformed normal
-            normals_global[i * 3 + 0] = nx_global;
-            normals_global[i * 3 + 1] = ny_global;
-            normals_global[i * 3 + 2] = nz_global;
+            // Store combined data: [x, y, z, nx, ny, nz]
+            points_with_normals[i * 6 + 0] = x;
+            points_with_normals[i * 6 + 1] = y;
+            points_with_normals[i * 6 + 2] = z;
+            points_with_normals[i * 6 + 3] = nx;
+            points_with_normals[i * 6 + 4] = ny;
+            points_with_normals[i * 6 + 5] = nz;
         }
         
-        return normals_global;
+        return points_with_normals;
+    }
+
+
+    std::vector<float> transformToGlobalFrame(const std::vector<float>& points_with_normals, 
+                                              uint32_t width, uint32_t height)
+    {
+        //TODO make sure this takes all points and normals and transforms them correctly and fix 
+        
+        return points_with_normals_global;
     }
     
-    std::vector<float> computePointsWithPolarAngles(const std::vector<float>& normals, 
+    std::vector<float> computePolarAngles(const std::vector<float>& normals, 
                                                     uint32_t width, uint32_t height)
     {
         // Create output vector for (x, y, z, theta) - 4 values per point
@@ -225,13 +280,16 @@ private:
     }
 
     
-    
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr surface_normals_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
+
+    // Camera to global transformation (tf2::Transform)
+    tf2::Transform cam_to_global_transform_;
     
     // Camera parameters
     double fov_x_;
