@@ -1,3 +1,7 @@
+/*
+command: ros2 run sync_pkg test_publisher_sync_data --ros-args -p publish_interval_sec:=2.0
+(make sure that the publishing interval is longer than the subscription delay to see the effect)
+*/
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <message_filters/subscriber.h>

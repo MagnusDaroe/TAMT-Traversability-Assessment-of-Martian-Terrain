@@ -4,3 +4,4 @@ log/
 .vscode
 venv_tamt
 dataset/AI4MARS_YOLO/
+sanity_data/ 

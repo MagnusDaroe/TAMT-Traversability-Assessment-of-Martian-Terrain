@@ -46,6 +46,16 @@ ament_target_dependencies(publisher_campose
   geometry_msgs
 )
 
+add_executable(publisher_all_data src/input_nodes/publisher_all_data.cpp)
+ament_target_dependencies(publisher_all_data
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  geometry_msgs
+  OpenCV
+)
+
 add_executable(publisher_sync_data src/sync_nodes/sync_node.cpp)
 ament_target_dependencies(publisher_sync_data
   rclcpp
@@ -66,11 +76,24 @@ ament_target_dependencies(test_publisher_sync_data
   geometry_msgs
 )
 
+add_executable(sanity_test src/sanity_tester/sanity_test.cpp)
+ament_target_dependencies(sanity_test
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  message_filters
+  OpenCV
+  geometry_msgs
+)
+
 install(TARGETS
   publisher_depth
   publisher_rgb 
   publisher_campose
   publisher_sync_data
+  publisher_all_data
+  sanity_test
   test_publisher_sync_data
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -84,9 +107,8 @@ install(DIRECTORY include/
 #  DESTINATION share/${PROJECT_NAME}
 #)
 
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/depth
-  ${CMAKE_CURRENT_SOURCE_DIR}/data/rgb
-  DESTINATION share/${PROJECT_NAME}
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/
+  DESTINATION share/${PROJECT_NAME}/data
   USE_SOURCE_PERMISSIONS
 )
 
