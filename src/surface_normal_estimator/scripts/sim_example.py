@@ -15,12 +15,13 @@ if __name__ == '__main__':
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Path to the frame_005 dataset
-    depth_dir = os.path.join(script_dir, 'images', 'frame_006')
+    dir = os.path.join(script_dir, 'images', 'session_0')
 
     # if you want to use your own data, please modify rgb_image, depth_image, camParam and use_size correspondingly.
-    depth_image = np.load(os.path.join(depth_dir, 'depth.npy'))
+    i = 4
+    depth_image = np.load(os.path.join(dir, 'depth', f'depth_00000{i}.npy'))
     # Save depth image as CSV file
-    # csv_path = os.path.join(depth_dir, 'depth.csv')
+    # csv_path = os.path.join(dir, 'depth.csv')
     # np.savetxt(csv_path, depth_image, delimiter=',')
     # print(f"Depth image saved to: {csv_path}")
 
@@ -31,7 +32,7 @@ if __name__ == '__main__':
     oriSize = (oriWidth, oriHeight)
 
     # Load ground truth normal image
-    normal_gt = np.load(os.path.join(depth_dir, 'normals.npy'))
+    normal_gt = np.load(os.path.join(dir, 'normals', f'normals_00000{i}.npy'))
     print("normal_gt shape:", normal_gt.shape)
 
     # Extract only first 3 channels (XYZ) if there's an alpha channel
@@ -40,9 +41,45 @@ if __name__ == '__main__':
         normal_gt = normal_gt[:, :, :3]
     print("normal_gt shape after channel extraction:", normal_gt.shape)
 
+    # Load camera pose from CSV and transform ground truth normals to world frame
+    import pandas as pd
+    from scipy.spatial.transform import Rotation
+    
+    cam_pose_path = os.path.join(dir, 'cam_poses.csv')
+    cam_pose_df = pd.read_csv(cam_pose_path, comment='#')
+    
+    # Extract quaternion (x, y, z, w) - Hamilton convention
+    qx, qy, qz, qw = cam_pose_df.iloc[i][['qx', 'qy', 'qz', 'qw']].values
+    
+    # Create rotation object from quaternion
+    # world_T_cam rotation: transforms from camera to world
+    rotation = Rotation.from_quat([qx, qy, qz, qw])
+    rotation_matrix = rotation.as_matrix().T
+    
+    print(f"Camera pose quaternion: [{qx}, {qy}, {qz}, {qw}]")
+    print(f"Rotation matrix:\n{rotation_matrix}")
+    
+    # Create additional 180-degree rotation about X-axis
+    rotation_x_180 = Rotation.from_euler('x', 180, degrees=True)
+    rotation_x_180_matrix = rotation_x_180.as_matrix()
+    
+    # Combine rotations: first apply camera pose rotation, then 180° X rotation
+    combined_rotation_matrix = rotation_x_180_matrix @ rotation_matrix
+    print(f"180° X-axis rotation matrix:\n{rotation_x_180_matrix}")
+    print(f"Combined rotation matrix:\n{combined_rotation_matrix}")
+    
+    # Transform ground truth normals from camera frame to world frame
+    h_gt, w_gt, _ = normal_gt.shape
+    normals_gt_reshaped = normal_gt.reshape(-1, 3)
+    normals_gt_world = (combined_rotation_matrix @ normals_gt_reshaped.T).T
+    normal_gt = normals_gt_world.reshape(h_gt, w_gt, 3)
+    print("Ground truth normals transformed to camera frame with 180° X rotation")
+
+
+
     # Save ground truth normals as CSV file
     normal_gt_reshaped = normal_gt.reshape(-1, 3)
-    csv_path_gt = os.path.join(depth_dir, 'ground_truth_normals.csv')
+    csv_path_gt = os.path.join(dir, 'ground_truth_normals.csv')
     np.savetxt(csv_path_gt, normal_gt_reshaped, delimiter=',', header='nx,ny,nz', comments='')
     print(f"Ground truth normals saved to: {csv_path_gt}")
 
@@ -70,7 +107,7 @@ if __name__ == '__main__':
     # Save normal image as CSV file
     # Reshape to 2D array where each row is a pixel's normal vector (x, y, z)
     normal_reshaped = normal_image.reshape(-1, 3)
-    csv_path = os.path.join(depth_dir, 'computed_normals.csv')
+    csv_path = os.path.join(dir, 'computed_normals.csv')
     np.savetxt(csv_path, normal_reshaped, delimiter=',', header='nx,ny,nz', comments='')
     print(f"Normal image saved to: {csv_path}")
 
@@ -131,63 +168,63 @@ if __name__ == '__main__':
     colors_img = (W_img - W_img.min()) / (W_img.max() - W_img.min())
     colors_gt = (W_gt - W_gt.min()) / (W_gt.max() - W_gt.min())
 
-    # --- Plot with normal maps underneath ---
-    fig = plt.figure(figsize=(16, 14))
+    # # --- Plot with normal maps underneath ---
+    # fig = plt.figure(figsize=(16, 14))
     
-    # Compute unified color scaling based on combined Z-components
-    W_combined = np.concatenate([W_img.flatten(), W_gt.flatten()])
-    W_min, W_max = W_combined.min(), W_combined.max()
+    # # Compute unified color scaling based on combined Z-components
+    # W_combined = np.concatenate([W_img.flatten(), W_gt.flatten()])
+    # W_min, W_max = W_combined.min(), W_combined.max()
     
-    # Normalize colors using the same scale for both plots
-    colors_img = (W_img - W_min) / (W_max - W_min + 1e-8)
-    colors_gt = (W_gt - W_min) / (W_max - W_min + 1e-8)
+    # # Normalize colors using the same scale for both plots
+    # colors_img = (W_img - W_min) / (W_max - W_min + 1e-8)
+    # colors_gt = (W_gt - W_min) / (W_max - W_min + 1e-8)
     
-    # Computed normals plot
-    ax1 = fig.add_subplot(221, projection='3d')
-    ax1.quiver(X, Y, Z, U_img, V_img, W_img, length=scale, normalize=True, color=plt.cm.viridis(colors_img.flatten()))
-    ax1.set_xlabel('X')
-    ax1.set_ylabel('Y')
-    ax1.set_zlabel('Z')
-    ax1.set_title('Computed Normals (SNE)')
-    ax1.set_xlim([0, patch_size])
-    ax1.set_ylim([0, patch_size])
-    ax1.set_zlim([-1, 1])
+    # # Computed normals plot
+    # ax1 = fig.add_subplot(221, projection='3d')
+    # ax1.quiver(X, Y, Z, U_img, V_img, W_img, length=scale, normalize=True, color=plt.cm.viridis(colors_img.flatten()))
+    # ax1.set_xlabel('X')
+    # ax1.set_ylabel('Y')
+    # ax1.set_zlabel('Z')
+    # ax1.set_title('Computed Normals (SNE)')
+    # ax1.set_xlim([0, patch_size])
+    # ax1.set_ylim([0, patch_size])
+    # ax1.set_zlim([-1, 1])
 
-    # Ground truth normals plot
-    ax2 = fig.add_subplot(222, projection='3d')
-    ax2.quiver(X, Y, Z, U_gt, V_gt, W_gt, length=scale, normalize=True, color=plt.cm.viridis(colors_gt.flatten()))
-    ax2.set_xlabel('X')
-    ax2.set_ylabel('Y')
-    ax2.set_zlabel('Z')
-    ax2.set_title('Ground Truth Normals')
-    ax2.set_xlim([0, patch_size])
-    ax2.set_ylim([0, patch_size])
-    ax2.set_zlim([-1, 1])
+    # # Ground truth normals plot
+    # ax2 = fig.add_subplot(222, projection='3d')
+    # ax2.quiver(X, Y, Z, U_gt, V_gt, W_gt, length=scale, normalize=True, color=plt.cm.viridis(colors_gt.flatten()))
+    # ax2.set_xlabel('X')
+    # ax2.set_ylabel('Y')
+    # ax2.set_zlabel('Z')
+    # ax2.set_title('Ground Truth Normals')
+    # ax2.set_xlim([0, patch_size])
+    # ax2.set_ylim([0, patch_size])
+    # ax2.set_zlim([-1, 1])
 
-    # Computed normal map visualization (2D image)
-    ax3 = fig.add_subplot(223)
-    # Convert normals from [-1, 1] to [0, 1] for display
-    normals_image_display = (normals_image_subset + 1) / 2
-    # Rotate 180 degrees
-    #normals_image_display = np.rot90(normals_image_display, k=2)
-    ax3.imshow(normals_image_display)
-    ax3.set_title('Computed Normal Map (Patch)')
-    ax3.set_xlabel('X (pixels)')
-    ax3.set_ylabel('Y (pixels)')
+    # # Computed normal map visualization (2D image)
+    # ax3 = fig.add_subplot(223)
+    # # Convert normals from [-1, 1] to [0, 1] for display
+    # normals_image_display = (normals_image_subset + 1) / 2
+    # # Rotate 180 degrees
+    # #normals_image_display = np.rot90(normals_image_display, k=2)
+    # ax3.imshow(normals_image_display)
+    # ax3.set_title('Computed Normal Map (Patch)')
+    # ax3.set_xlabel('X (pixels)')
+    # ax3.set_ylabel('Y (pixels)')
 
-    # Ground truth normal map visualization (2D image)
-    ax4 = fig.add_subplot(224)
-    # Convert normals from [-1, 1] to [0, 1] for display
-    normals_gt_display = (normals_gt_subset + 1) / 2
-    # Rotate 180 degrees
-    #normals_gt_display = np.rot90(normals_gt_display, k=2)
-    ax4.imshow(normals_gt_display)
-    ax4.set_title('Ground Truth Normal Map (Patch)')
-    ax4.set_xlabel('X (pixels)')
-    ax4.set_ylabel('Y (pixels)')
+    # # Ground truth normal map visualization (2D image)
+    # ax4 = fig.add_subplot(224)
+    # # Convert normals from [-1, 1] to [0, 1] for display
+    # normals_gt_display = (normals_gt_subset + 1) / 2
+    # # Rotate 180 degrees
+    # #normals_gt_display = np.rot90(normals_gt_display, k=2)
+    # ax4.imshow(normals_gt_display)
+    # ax4.set_title('Ground Truth Normal Map (Patch)')
+    # ax4.set_xlabel('X (pixels)')
+    # ax4.set_ylabel('Y (pixels)')
 
-    plt.tight_layout()
-    plt.show()
+    # plt.tight_layout()
+    # plt.show()
 
     # Spherical Coordinates Visualization
     # Convert normals to spherical coordinates (theta, phi)
