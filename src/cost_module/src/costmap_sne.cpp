@@ -128,15 +128,15 @@ private:
         std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
 
         // Transform normals to global frame using pointcloud coordinates
-        std::vector<float> normals_global = transformToGlobalFrame(points_with_normals, width, height);
+        std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals, width, height);
         
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
-        std::vector<float> points_with_theta = computePolarAngles(normals_global, width, height);
+        std::vector<float> points_with_theta_global = computePolarAngles(points_with_normals_global, width, height);
         
         // Compute traversability cost for each point based on polar angle
-        std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta, width, height);
-        
+        std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_global, width, height);
+
         RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
     }
     
@@ -192,67 +192,83 @@ private:
     std::vector<float> transformToGlobalFrame(const std::vector<float>& points_with_normals, 
                                               uint32_t width, uint32_t height)
     {
-        //TODO make sure this takes all points and normals and transforms them correctly and fix 
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_normals_global(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
+        
+        // Transform each point and its normal vector to the global frame
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            // Extract point coordinates in camera frame
+            float x_cam = points_with_normals[i * 6 + 0];
+            float y_cam = points_with_normals[i * 6 + 1];
+            float z_cam = points_with_normals[i * 6 + 2];
+            
+            // Extract normal vector in camera frame
+            float nx_cam = points_with_normals[i * 6 + 3];
+            float ny_cam = points_with_normals[i * 6 + 4];
+            float nz_cam = points_with_normals[i * 6 + 5];
+            
+            // Transform point to global frame
+            tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
+            tf2::Vector3 point_global = cam_to_global_transform_ * point_cam;
+            
+            // Transform normal vector to global frame (rotation only, no translation)
+            tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
+            tf2::Vector3 normal_global = cam_to_global_transform_.getBasis() * normal_cam;
+            
+            // Store transformed data: [x, y, z, nx, ny, nz] in global frame
+            points_with_normals_global[i * 6 + 0] = point_global.x();
+            points_with_normals_global[i * 6 + 1] = point_global.y();
+            points_with_normals_global[i * 6 + 2] = point_global.z();
+            points_with_normals_global[i * 6 + 3] = normal_global.x();
+            points_with_normals_global[i * 6 + 4] = normal_global.y();
+            points_with_normals_global[i * 6 + 5] = normal_global.z();
+        }
         
         return points_with_normals_global;
     }
     
-    std::vector<float> computePolarAngles(const std::vector<float>& normals, 
+    std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_global, 
                                                     uint32_t width, uint32_t height)
     {
-        // Create output vector for (x, y, z, theta) - 4 values per point
         size_t num_pixels = width * height;
-        std::vector<float> points_with_theta(num_pixels * 4);
+        std::vector<float> points_with_theta_global(num_pixels * 4); // 4 values per point: x, y, z, theta
         
-        // Parse pointcloud to get 3D coordinates for each pixel
-        const uint8_t* pc_data = sync_pointcloud_->data.data();
-        uint32_t point_step = sync_pointcloud_->point_step;
-        
-        // Compute polar angle for each normal vector
+        // Compute polar angle for each point's normal vector
         for (size_t i = 0; i < num_pixels; ++i)
         {
-            // Get 3D coordinates from pointcloud
-            const float* point_ptr = reinterpret_cast<const float*>(pc_data + i * point_step);
-            float x = point_ptr[0];
-            float y = point_ptr[1];
-            float z = point_ptr[2];
+            // Extract point coordinates in global frame
+            float x_global = points_with_normals_global[i * 6 + 0];
+            float y_global = points_with_normals_global[i * 6 + 1];
+            float z_global = points_with_normals_global[i * 6 + 2];
             
-            // Get normal vector components (nx, ny, nz) - these are the transformed global normals
-            float nx = normals[i * 3 + 0];
-            float ny = normals[i * 3 + 1];
-            float nz = normals[i * 3 + 2];
+            // Extract normal vector components in global frame
+            float nx_global = points_with_normals_global[i * 6 + 3];
+            float ny_global = points_with_normals_global[i * 6 + 4];
+            float nz_global = points_with_normals_global[i * 6 + 5];
             
-            float theta;
+            // Compute polar angle θ (theta) using arctan formula
+            // θ = arctan(√(nx² + ny²) / nz)
+            float xy_magnitude = std::sqrt(nx_global * nx_global + ny_global * ny_global);
+            float theta = std::atan2(xy_magnitude, nz_global);
             
-            // Check if all normal components are zero
-            if (std::abs(nx) < 1e-9f && std::abs(ny) < 1e-9f && std::abs(nz) < 1e-9f)
-            {
-                theta = std::numeric_limits<float>::quiet_NaN();
-            }
-            else
-            {
-                // Compute polar angle (theta) in spherical coordinates using the normal vector
-                // θ = arccos(nz / √(nx² + ny² + nz²))
-                float magnitude = std::sqrt(nx*nx + ny*ny + nz*nz);
-                theta = std::acos(nz / magnitude);
-            }
-            
-            // Store x, y, z, theta for this point
-            points_with_theta[i * 4 + 0] = x;
-            points_with_theta[i * 4 + 1] = y;
-            points_with_theta[i * 4 + 2] = z;
-            points_with_theta[i * 4 + 3] = theta;
+            // Store combined data: [x, y, z, theta] in global frame
+            points_with_theta_global[i * 4 + 0] = x_global;
+            points_with_theta_global[i * 4 + 1] = y_global;
+            points_with_theta_global[i * 4 + 2] = z_global;
+            points_with_theta_global[i * 4 + 3] = theta;
         }
         
-        return points_with_theta;
+        return points_with_theta_global;
     }
     
-    std::vector<float> computeTraversabilityCost(const std::vector<float>& points_with_theta,
+    std::vector<float> computeTraversabilityCost(const std::vector<float>& points_with_theta_global,
                                                   uint32_t width, uint32_t height)
     {
-        // Create output vector for traversability costs
+        // Create output vector for points with traversability costs
+        // Format: [x, y, z, cost] for each point
         size_t num_pixels = width * height;
-        std::vector<float> costs(num_pixels);
+        std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
         
         // Cost function: C = 103.35 * theta²
         const float cost_coefficient = 103.35f;
@@ -260,23 +276,33 @@ private:
         // Compute cost for each point
         for (size_t i = 0; i < num_pixels; ++i)
         {
-            // Get theta from the points_with_theta vector
-            // Format: [x, y, z, theta] per point
-            float theta = points_with_theta[i * 4 + 3];
+            // Get point coordinates from the points_with_theta_global vector
+            // Input format: [x, y, z, theta] per point
+            float x_global = points_with_theta_global[i * 4 + 0];
+            float y_global = points_with_theta_global[i * 4 + 1];
+            float z_global = points_with_theta_global[i * 4 + 2];
+            float theta = points_with_theta_global[i * 4 + 3];
             
-            // Check if theta is NaN
+            // Compute cost
+            float cost;
             if (std::isnan(theta))
             {
-                costs[i] = std::numeric_limits<float>::quiet_NaN();
+                cost = std::numeric_limits<float>::quiet_NaN();
             }
             else
             {
                 // Compute cost: C = 103.35 * theta² (theta in radians)
-                costs[i] = cost_coefficient * theta * theta;
+                cost = cost_coefficient * theta * theta;
             }
+            
+            // Store combined data: [x, y, z, cost] in global frame
+            points_with_costs[i * 4 + 0] = x_global;
+            points_with_costs[i * 4 + 1] = y_global;
+            points_with_costs[i * 4 + 2] = z_global;
+            points_with_costs[i * 4 + 3] = cost;
         }
-        
-        return costs;
+        //TODO make into correct type for costmap (now it is x,y,z,cost)
+        return points_with_costs;
     }
 
     
