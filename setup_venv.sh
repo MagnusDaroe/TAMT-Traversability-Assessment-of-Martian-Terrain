@@ -45,7 +45,12 @@ echo "Installing ROS 2 dependencies..."
 pip install empy==3.3.4 catkin_pkg lark
 echo -e "${GREEN}✓ ROS 2 dependencies installed${NC}"
 
-# Install Ultralytics (this will install all dependencies including PyTorch, OpenCV, etc.)
+# Install numpy (<2.0) to avoid incompatible v2.0
+echo "Installing numpy (<2.0)..."
+pip install "numpy<2.0"
+echo -e "${GREEN}✓ numpy (<2.0) installed${NC}"
+
+# Install Ultralytics (this will install all other dependencies)
 echo "Installing Ultralytics..."
 pip install ultralytics
 echo -e "${GREEN}✓ Ultralytics installed${NC}"

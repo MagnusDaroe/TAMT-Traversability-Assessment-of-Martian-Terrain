@@ -27,6 +27,8 @@ install(PROGRAMS
   scripts/train_model.py
   scripts/test_segmentation.py
   scripts/segment.py
+  scripts/mask_decoder.py
+  scripts/Image_publisher_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

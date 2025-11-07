@@ -201,3 +201,13 @@ python3 src/terrain_segmentation/scripts/reconfigure_model_output.py \
 
 
   https://y-t-g.github.io/tutorials/yolov8n-add-classes/
+
+
+
+ 
+
+  ros2 run terrain_segmentation Image_publisher_node.py \
+    --ros-args \
+    -p image_folder:=/home/daroe/tamt/dataset/AI4MARS_NAV_GOOD/images \
+    -p publish_rate:=2.0 \
+    -p loop:=true
