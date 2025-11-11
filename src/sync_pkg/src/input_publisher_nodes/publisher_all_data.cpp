@@ -61,7 +61,7 @@ public:
         // Setup QoS for image topics
         rclcpp::QoS qos(rclcpp::KeepLast(10));
         qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
-        qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+        qos.durability(rclcpp::DurabilityPolicy::Volatile);  // Changed from TransientLocal to Volatile for streaming data
         
         // Create publishers
         rgb_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/left_image", qos);
