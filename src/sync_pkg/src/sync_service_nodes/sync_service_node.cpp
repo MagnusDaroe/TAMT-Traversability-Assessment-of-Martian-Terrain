@@ -33,7 +33,7 @@ public:
 
     // --- Synchronizer (ApproximateTime) ---
     sync_ = std::make_shared<message_filters::Synchronizer<ApproxSyncPolicy>>(
-      ApproxSyncPolicy(10), rgb_sub_, depth_sub_, pose_sub_);
+      10, rgb_sub_, depth_sub_, pose_sub_);
     sync_->registerCallback(
       std::bind(&SyncServicePublisherNode::sync_callback, this,
                 std::placeholders::_1,
