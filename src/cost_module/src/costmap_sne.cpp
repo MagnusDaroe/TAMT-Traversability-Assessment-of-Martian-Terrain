@@ -111,12 +111,12 @@ private:
             return;
         }
         
-        // // Check if we have received a sync_pointcloud_ and cam_to_global_transform_
-        // if (sync_pointcloud_ && cam_to_global_transform_)
-        // {
-        //     RCLCPP_WARN(this->get_logger(), "No pointcloud received yet, skipping normal processing");
-        //     return;
-        // }
+        // Check if we have received a sync_pointcloud_
+        if (!sync_pointcloud_)
+        {
+            RCLCPP_WARN(this->get_logger(), "No pointcloud received yet, skipping normal processing");
+            return;
+        }
 
         // Normals in camera frame - convert from image data to float vector
         const float* normals_ptr = reinterpret_cast<const float*>(msg->data.data());
@@ -127,13 +127,70 @@ private:
 
         // Combine pointcloud with normals
         std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
+        // Print x,y,z,nx,ny,nz for the bottom-left pixel (u=0, v=height-1)
+        if (width == 0 || height == 0)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Image has zero width or height");
+        }
+        else
+        {
+            size_t u = 0;
+            size_t v = static_cast<size_t>(height) - 1; // bottom row
+            size_t idx = v * static_cast<size_t>(width) + u;
+            size_t base = idx * 6; // 6 values per point: x,y,z,nx,ny,nz
+
+            if (base + 5 < points_with_normals.size())
+            {
+            float px = points_with_normals[base + 0];
+            float py = points_with_normals[base + 1];
+            float pz = points_with_normals[base + 2];
+            float nx = points_with_normals[base + 3];
+            float ny = points_with_normals[base + 4];
+            float nz = points_with_normals[base + 5];
+
+            RCLCPP_INFO(this->get_logger(),
+                    "Bottom-left pixel (u=%zu, v=%zu, idx=%zu): x=%.6f y=%.6f z=%.6f nx=%.6f ny=%.6f nz=%.6f",
+                    u, v, idx, px, py, pz, nx, ny, nz);
+            }
+            else
+            {
+            RCLCPP_ERROR(this->get_logger(), "points_with_normals too small for bottom-left index (base=%zu, size=%zu)",
+                     base, points_with_normals.size());
+            }
+        }
+        // Check if combining failed (returns empty vector on error)
+        if (points_with_normals.empty())
+        {
+            RCLCPP_ERROR(this->get_logger(), "Failed to combine pointcloud with normals");
+            return;
+        }
 
         // Transform normals to global frame using pointcloud coordinates
         std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals, width, height);
-        
+        RCLCPP_INFO(this->get_logger(), "Transformed normals to global frame");
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
         std::vector<float> points_with_theta_global = computePolarAngles(points_with_normals_global, width, height);
+        RCLCPP_INFO(this->get_logger(), "Computed polar angles from normals: First 5 values starting from the middle of the image:");
+        // Determine middle pixel index
+        uint32_t mid_x = width / 2;
+        uint32_t mid_y = height / 2;
+        size_t num_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+        size_t mid_idx = static_cast<size_t>(mid_y) * static_cast<size_t>(width) + static_cast<size_t>(mid_x);
+        size_t start = (mid_idx < num_pixels) ? mid_idx : (num_pixels > 0 ? num_pixels / 2 : 0);
+        size_t count = 3;
+        size_t end = std::min(start + count, num_pixels);
+
+        // Print each selected theta (and optionally the associated XYZ)
+        for (size_t idx = start; idx < end; ++idx)
+        {
+            float x = points_with_theta_global[idx * 4 + 0];
+            float y = points_with_theta_global[idx * 4 + 1];
+            float z = points_with_theta_global[idx * 4 + 2];
+            float theta = points_with_theta_global[idx * 4 + 3];
+            RCLCPP_INFO(this->get_logger(), "  [%zu] x=%.3f y=%.3f z=%.3f theta=%.6f", idx, x, y, z, theta);
+        }
+
         
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_global, width, height);

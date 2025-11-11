@@ -11,10 +11,10 @@ public:
     SurfaceNormalEstimation()
         : Node("surface_normal_estimation")
     {
-        // ROS 2 QoS settings
+        // ROS 2 QoS settings - matching streaming data pattern
         rclcpp::QoS qos(rclcpp::KeepLast(10));
         qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
-        qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+        qos.durability(rclcpp::DurabilityPolicy::Volatile);  // Changed from TransientLocal to Volatile
 
         // Subscribe to sync_depth topic
         depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
