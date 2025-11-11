@@ -4,6 +4,7 @@ command: ros2 run sync_pkg test_publisher_sync_data --ros-args -p publish_interv
 */
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
@@ -135,19 +136,30 @@ private:
   last_publish_time_ = now;
 
   // Publish the synchronized pair (if available)
-  if (latest_rgb_msg_ && latest_depth_msg_) {
+  if (latest_rgb_msg_ && latest_depth_msg_ && latest_cam_pose_msg_) {
     rgb_publisher_->publish(*latest_rgb_msg_);
     depth_publisher_->publish(*latest_depth_msg_);
     cam_pose_publisher_->publish(*latest_cam_pose_msg_);
 
     // Convert depth image to point cloud and publish
     auto pointcloud_msg = depthToPointCloud(latest_depth_msg_, intrinsics_, this->get_logger());
-    pointcloud_publisher_->publish(*pointcloud_msg);
 
     if (pointcloud_msg) {
+        // Debug: Count valid points
+        int valid_points = 0;
+        sensor_msgs::PointCloud2ConstIterator<float> iter_x(*pointcloud_msg, "x");
+        sensor_msgs::PointCloud2ConstIterator<float> iter_z(*pointcloud_msg, "z");
+        
+        for (; iter_x != iter_x.end(); ++iter_x, ++iter_z) {
+          if (!std::isnan(*iter_x) && !std::isnan(*iter_z) && *iter_z > 0.0f) {
+            valid_points++;
+          }
+        }
+        
         pointcloud_publisher_->publish(*pointcloud_msg);
         RCLCPP_INFO(this->get_logger(),
-                    "Published synchronized pair (RGB, Depth, PointCloud, CameraPose) from timer callback.");
+                    "Published synchronized pair (RGB, Depth, PointCloud[%d valid points], CameraPose) | Frame: %s",
+                    valid_points, pointcloud_msg->header.frame_id.c_str());
       } else {
         RCLCPP_WARN(this->get_logger(),
                     "Failed to convert depth to point cloud.");
