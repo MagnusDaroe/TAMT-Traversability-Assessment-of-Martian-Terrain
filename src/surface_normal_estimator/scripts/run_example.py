@@ -5,7 +5,7 @@ import torch
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-
+from scipy.spatial.transform import Rotation
 
 class dataset():
     def __init__(self):
@@ -27,7 +27,6 @@ if __name__ == '__main__':
     for i in range(1,7):
         # if you want to use your own data, please modify rgb_image, depth_image, camParam and use_size correspondingly.
         depth_image = np.load(os.path.join(depth_dir, 'depth', f'depth_{i}.npy'))
-        depth_image = 1.0 / (depth_image + 1e-8)
 
         # Remove the single channel dimension if present
         if depth_image.ndim == 3:
@@ -44,13 +43,6 @@ if __name__ == '__main__':
         if normal_gt.shape[0] == 3:
             normal_gt = np.transpose(normal_gt, [1, 2, 0])
         
-        # # Debug: check if we have any [0, 0, 0] vectors (invalid normals in [-1,1] range)
-        # # In [-1, 1] range, [0, 0, 0] is the equivalent of [0.5, 0.5, 0.5] in [0, 1] range
-        # mask = (np.abs(normal_gt[:, :, 0]) < 1e-3) & (np.abs(normal_gt[:, :, 1]) < 1e-3) & (np.abs(normal_gt[:, :, 2]) < 1e-3)
-        # if np.any(mask):
-        #     print(f"Image {i}: Found {np.sum(mask)} invalid [0,0,0] normals, setting to [0, 0, 1]")
-        #     normal_gt[mask] = [0.0, 0.0, 1.0]  # Point upward in [-1, 1] range (displays as [0.5, 0.5, 1])
-
         # resize image to enable sizes divide 32
         use_size = (1248, 384)
 
@@ -59,18 +51,23 @@ if __name__ == '__main__':
         camParam = torch.tensor([[7.215377e+02, 0.000000e+00, 6.095593e+02],
                                 [0.000000e+00, 7.215377e+02, 1.728540e+02],
                                 [0.000000e+00, 0.000000e+00, 1.000000e+00]], dtype=torch.float32)  # camera parameters
+        print("camParam:", camParam[0,0])
         normal = sne_model(torch.tensor(depth_image.astype(np.float32)/1000), camParam)
         
         print("normal image shape:", normal.shape)
         normal_image = normal.cpu().numpy()
         normal_image = np.squeeze(normal_image)
         normal_image = np.transpose(normal_image, [1, 2, 0])
-        print("normal image transposed shape:", normal_image.shape)
+        
+        # # Apply 180 degree rotation about X-axis and Y-axis
+        rotation_x = Rotation.from_euler('x', 180, degrees=True).as_matrix()
+        rotation_y = Rotation.from_euler('y', 180, degrees=True).as_matrix()
+        normal_image = (rotation_y @ rotation_x @ normal_image.reshape(-1, 3).T).T.reshape(oriHeight, oriWidth, 3)
 
         # Save as PNG (converted to uint8 in [0, 255] range for visualization)
-        images_dir = os.path.join(script_dir, 'images')
-        os.makedirs(images_dir, exist_ok=True)
-        cv2.imwrite(os.path.join(images_dir, f'normal_{i}.png'), cv2.cvtColor((255*(1+normal_image)/2).astype(np.uint8), cv2.COLOR_RGB2BGR))
+        # images_dir = os.path.join(script_dir, 'images')
+        # os.makedirs(images_dir, exist_ok=True)
+        # cv2.imwrite(os.path.join(images_dir, f'normal_{i}.png'), cv2.cvtColor((255*(1+normal_image)/2).astype(np.uint8), cv2.COLOR_RGB2BGR))
         
         # Store in original float32 [-1, 1] range for accurate comparison with ground truth
         depth_images.append(depth_image)
@@ -142,6 +139,6 @@ if __name__ == '__main__':
             axes[i, 2].axis('off')
 
     plt.tight_layout()
-    plt.savefig(os.path.join(images_dir, 'depth_normal_comparison.png'), dpi=150, bbox_inches='tight')
+    #plt.savefig(os.path.join(images_dir, 'depth_normal_comparison.png'), dpi=150, bbox_inches='tight')
     plt.show()
-    print(f"Comparison plot saved to '{os.path.join(images_dir, 'depth_normal_comparison.png')}'")
+    #print(f"Comparison plot saved to '{os.path.join(images_dir, 'depth_normal_comparison.png')}'")

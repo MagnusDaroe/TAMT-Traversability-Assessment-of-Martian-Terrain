@@ -15,7 +15,7 @@ if __name__ == '__main__':
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Path to the frame_005 dataset
-    dir = os.path.join(script_dir, 'images', 'session_0')
+    dir = os.path.join(script_dir, 'images', 'session_3')
 
     # if you want to use your own data, please modify rgb_image, depth_image, camParam and use_size correspondingly.
     i = 4
@@ -52,29 +52,33 @@ if __name__ == '__main__':
     qx, qy, qz, qw = cam_pose_df.iloc[i][['qx', 'qy', 'qz', 'qw']].values
     
     # Create rotation object from quaternion
-    # world_T_cam rotation: transforms from camera to world
+    # Quaternion represents camera → world rotation, so transpose to get world → camera
     rotation = Rotation.from_quat([qx, qy, qz, qw])
-    rotation_matrix = rotation.as_matrix().T
+    rotation_matrix = rotation.as_matrix()  # Transpose: camera → world becomes world → camera
     
     print(f"Camera pose quaternion: [{qx}, {qy}, {qz}, {qw}]")
-    print(f"Rotation matrix:\n{rotation_matrix}")
+    print(f"Rotation matrix (world to camera):\n{rotation_matrix}")
     
-    # Create additional 180-degree rotation about X-axis
+    # Create additional 180-degree rotation about X-axis (in camera frame)
     rotation_x_180 = Rotation.from_euler('x', 180, degrees=True)
     rotation_x_180_matrix = rotation_x_180.as_matrix()
+    print(f"180-degree rotation matrix about X-axis:\n{rotation_x_180_matrix}")
     
-    # Combine rotations: first apply camera pose rotation, then 180° X rotation
-    combined_rotation_matrix = rotation_x_180_matrix @ rotation_matrix
-    print(f"180° X-axis rotation matrix:\n{rotation_x_180_matrix}")
-    print(f"Combined rotation matrix:\n{combined_rotation_matrix}")
-    
-    # Transform ground truth normals from camera frame to world frame
-    h_gt, w_gt, _ = normal_gt.shape
-    normals_gt_reshaped = normal_gt.reshape(-1, 3)
-    normals_gt_world = (combined_rotation_matrix @ normals_gt_reshaped.T).T
-    normal_gt = normals_gt_world.reshape(h_gt, w_gt, 3)
-    print("Ground truth normals transformed to camera frame with 180° X rotation")
 
+
+    # Transform ground truth normals from world frame to camera frame, then rotate 180° about camera X-axis
+    h_gt, w_gt, _ = normal_gt.shape
+    print(f"Ground truth normals shape (before transformation): {normal_gt.shape}")
+    normals_gt_reshaped = normal_gt.reshape(-1, 3)
+    print(f"Ground truth normals reshaped for transformation: {normals_gt_reshaped.shape}")
+    # First: world → camera, then: rotate 180° about camera X-axis
+    #normals_gt_camera = (rotation_x_180_matrix @ rotation_matrix @ normals_gt_reshaped.T).T
+    normals_gt_camera = (rotation_x_180_matrix @ rotation_matrix.T @ normals_gt_reshaped.T).T
+    print(f"Ground truth normals transformed shape (camera frame): {normals_gt_camera.shape}")
+    normal_gt = normals_gt_camera.reshape(h_gt, w_gt, 3)
+    print(f"Ground truth normals reshaped back to image shape: {normal_gt.shape}")
+
+    print("Ground truth normals transformed from world frame to camera frame with 180° X rotation")
 
 
     # Save ground truth normals as CSV file
@@ -103,6 +107,8 @@ if __name__ == '__main__':
     normal_image = normal.cpu().numpy()
     normal_image = np.transpose(normal_image, [1, 2, 0])
     print("Computed normal image shape:", normal_image.shape)
+
+    print("Max norm (should be 1):", np.max(np.linalg.norm(normal_image, axis=2)))
 
     # Save normal image as CSV file
     # Reshape to 2D array where each row is a pixel's normal vector (x, y, z)
