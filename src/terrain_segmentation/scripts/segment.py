@@ -247,7 +247,7 @@ class TAMTSegmentationNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = TAMTSegmentationNode()
-    
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

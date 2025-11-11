@@ -211,3 +211,6 @@ python3 src/terrain_segmentation/scripts/reconfigure_model_output.py \
     -p image_folder:=/home/daroe/tamt/dataset/AI4MARS_NAV_GOOD/images \
     -p publish_rate:=2.0 \
     -p loop:=true
+
+
+    m2020_test_NLF_0034_0669963392_071ECM_N0031392NCAM03034_07_195J_merged12.jpeg

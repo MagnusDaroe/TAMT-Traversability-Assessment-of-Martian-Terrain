@@ -15,15 +15,29 @@ class SegmentationViewerNode(Node):
         # Initialize CV bridge
         self.bridge = CvBridge()
         
-        # Class names (update these based on your model)
+        # # Class names 
+        # self.class_names = {
+        #     0: "background",
+        #     1: "soil",
+        #     2: "bedrock",
+        #     3: "sand",
+        #     4: "big_rock"
+        # }
+
+          # Class names 
         self.class_names = {
-            0: "background",
-            1: "soil",
-            2: "bedrock",
-            3: "sand",
-            4: "big_rock"
-            # Add more class names as needed
+            0: "soil",
+            1: "bedrock",
+            2: "sand",
+            3: "big_rock"
         }
+
+
+        # names:
+        # 0: soil
+        # 1: bedrock
+        # 2: sand
+        # 3: big_rock
         
         # Color palette for visualization
         np.random.seed(42)
