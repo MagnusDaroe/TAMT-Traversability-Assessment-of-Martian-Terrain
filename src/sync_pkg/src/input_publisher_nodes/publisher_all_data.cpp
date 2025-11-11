@@ -47,16 +47,18 @@ class UnifiedDataPublisher : public rclcpp::Node
 {
 public:
     UnifiedDataPublisher()
-    : Node("unified_data_publisher"), current_frame_idx_(0)
+    : Node("unified_data_publisher"), current_frame_idx_(0), has_published_(false)
     {
         // Declare parameters
         this->declare_parameter<double>("publish_frequency_hz", 1.0);
         this->declare_parameter<std::string>("frame_id", "camera_frame");
-        this->declare_parameter<bool>("loop_playback", true);
+        this->declare_parameter<bool>("loop_playback", false);
+        this->declare_parameter<bool>("publish_once", true);
         
         double frequency = this->get_parameter("publish_frequency_hz").as_double();
         frame_id_ = this->get_parameter("frame_id").as_string();
         loop_playback_ = this->get_parameter("loop_playback").as_bool();
+        publish_once_ = this->get_parameter("publish_once").as_bool();
 
         // Setup QoS for image topics
         rclcpp::QoS qos(rclcpp::KeepLast(10));
@@ -83,8 +85,9 @@ public:
             std::bind(&UnifiedDataPublisher::publishFrame, this));
         
         RCLCPP_INFO(this->get_logger(), 
-                    "Unified publisher started (frequency = %.2f Hz, frame = %s, loop = %s)",
-                    frequency, frame_id_.c_str(), loop_playback_ ? "true" : "false");
+                    "Unified publisher started (frequency = %.2f Hz, frame = %s, loop = %s, publish_once = %s)",
+                    frequency, frame_id_.c_str(), loop_playback_ ? "true" : "false",
+                    publish_once_ ? "true" : "false");
     }
 
 private:
@@ -99,6 +102,8 @@ private:
     size_t current_frame_idx_;
     std::string frame_id_;
     bool loop_playback_;
+    bool publish_once_;
+    bool has_published_;
 
     bool loadDatasets()
     {
@@ -132,9 +137,13 @@ private:
         
         RCLCPP_INFO(get_logger(), "Found %zu dataset directories", dataset_dirs.size());
         
-        // Load frame from each dataset (each data_X has exactly 1 frame)
+        // Load only the first valid frame
         for (const auto &dataset_path : dataset_dirs) {
             loadDatasetFrame(dataset_path);
+            if (!frames_.empty()) {
+                RCLCPP_INFO(get_logger(), "Loaded one frame, stopping further loading");
+                break;  // Stop after loading the first valid frame
+            }
         }
         
         if (frames_.empty()) {
@@ -298,6 +307,12 @@ private:
 
     void publishFrame()
     {
+        // If publish_once is enabled and we've already published, stop
+        if (publish_once_ && has_published_) {
+            timer_->cancel();
+            return;
+        }
+        
         if (frames_.empty()) {
             RCLCPP_WARN_THROTTLE(get_logger(), *this->get_clock(), 5000, 
                                  "No frames to publish");
@@ -319,6 +334,16 @@ private:
         
         // Publish camera pose
         publishCameraPose(frame.campose_path, timestamp);
+
+        // Mark as published
+        has_published_ = true;
+        
+        // If publish_once is enabled, stop immediately
+        if (publish_once_) {
+            RCLCPP_INFO(get_logger(), "Published once. Stopping timer (node will continue running).");
+            timer_->cancel();
+            return;
+        }
 
         // Advance to next frame
         current_frame_idx_++;

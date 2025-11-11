@@ -13,6 +13,8 @@ find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -30,23 +32,23 @@ endif()
 include_directories(include)
 #include_directories(${OpenCV_INCLUDE_DIRS})
 
+# Create the costmap_sne executable
+add_executable(costmap_sne 
+  src/costmap_sne.cpp
+)
 
-# # Create the depth_publisher executable
-# add_executable(depth_publisher 
-#   # src/depth_publisher.cpp
-# )
-
-# # Add dependencies for example executable
-# ament_target_dependencies(depth_publisher
-#   rclcpp
-#   sensor_msgs
-#   ament_index_cpp
-# )
+# Add dependencies for costmap_sne executable
+ament_target_dependencies(costmap_sne
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  tf2
+  tf2_geometry_msgs
+)
 
 # Install C++ executables
 install(TARGETS
-  # surface_normal_estimator
-  # depth_publisher
+  costmap_sne
   DESTINATION lib/${PROJECT_NAME}
 )
 

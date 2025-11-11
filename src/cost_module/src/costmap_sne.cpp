@@ -14,15 +14,15 @@ class CostmapSNE : public rclcpp::Node
 public:
     CostmapSNE() : Node("costmap_sne")
     {
-        // Declare parameters (values will come from YAML file)
-        this->declare_parameter("camera.fov_x");
-        this->declare_parameter("camera.fov_y");
-        this->declare_parameter("camera.mounting_angle");
-        this->declare_parameter("camera.height");
-        this->declare_parameter("rover.width");
-        this->declare_parameter("rover.length");
+        // Declare parameters with default values (can be overridden by YAML file)
+        this->declare_parameter("camera.fov_x", 90.0);
+        this->declare_parameter("camera.fov_y", 60.0);
+        this->declare_parameter("camera.mounting_angle", 0.0);
+        this->declare_parameter("camera.height", 1.0);
+        this->declare_parameter("rover.width", 1.0);
+        this->declare_parameter("rover.length", 1.5);
         
-        // Get parameters from YAML file
+        // Get parameters from YAML file (or use defaults)
         fov_x_ = this->get_parameter("camera.fov_x").as_double();
         fov_y_ = this->get_parameter("camera.fov_y").as_double();
         mounting_angle_ = this->get_parameter("camera.mounting_angle").as_double();
@@ -111,15 +111,16 @@ private:
             return;
         }
         
-        // Check if we have received a sync_pointcloud_ and cam_to_global_transform_
-        if (sync_pointcloud_ && cam_to_global_transform_)
-        {
-            RCLCPP_WARN(this->get_logger(), "No pointcloud received yet, skipping normal processing");
-            return;
-        }
+        // // Check if we have received a sync_pointcloud_ and cam_to_global_transform_
+        // if (sync_pointcloud_ && cam_to_global_transform_)
+        // {
+        //     RCLCPP_WARN(this->get_logger(), "No pointcloud received yet, skipping normal processing");
+        //     return;
+        // }
 
-        // Normals in camera frame
-        std::vector<float> normals_camera = reinterpret_cast<std::vector<float>>(msg->data);
+        // Normals in camera frame - convert from image data to float vector
+        const float* normals_ptr = reinterpret_cast<const float*>(msg->data.data());
+        std::vector<float> normals_camera(normals_ptr, normals_ptr + (msg->width * msg->height * 3));
 
         uint32_t width = msg->width;
         uint32_t height = msg->height;
@@ -152,7 +153,7 @@ private:
                          "Size mismatch! Normals: %dx%d, Pointcloud: %dx%d",
                          width, height, 
                          sync_pointcloud_->width, sync_pointcloud_->height);
-            return;
+            return std::vector<float>();
         }
         
         size_t num_pixels = width * height;

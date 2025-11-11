@@ -18,6 +18,8 @@
   <depend>geometry_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>cv_bridge</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
 
   <!-- ROS 2 Python dependencies -->
   <depend>rclpy</depend>
