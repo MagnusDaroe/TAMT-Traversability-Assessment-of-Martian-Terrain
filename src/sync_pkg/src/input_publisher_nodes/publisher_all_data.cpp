@@ -421,7 +421,7 @@ private:
         msg.data.resize(height * width * sizeof(float));
         float* data_ptr = reinterpret_cast<float*>(msg.data.data());
         for (size_t i = 0; i < depth_data.size(); ++i) {
-            data_ptr[i] = depth_data[i] / 1000.0f;
+            data_ptr[i] = depth_data[i];
         }
         
         depth_pub_->publish(msg);

@@ -124,38 +124,60 @@ private:
 
         uint32_t width = msg->width;
         uint32_t height = msg->height;
+        
+        // Debug: Check if normals data contains valid non-zero values
+        size_t total_normals = width * height;
+        size_t non_zero_count = 0;
+        size_t nan_count = 0;
+        
+        for (size_t i = 0; i < total_normals; ++i)
+        {
+            float nx = normals_camera[i * 3 + 0];
+            float ny = normals_camera[i * 3 + 1];
+            float nz = normals_camera[i * 3 + 2];
+            
+            if (std::isnan(nx) || std::isnan(ny) || std::isnan(nz))
+            {
+                nan_count++;
+            }
+            else if (nx != 0.0f || ny != 0.0f || nz != 0.0f)
+            {
+                non_zero_count++;
+            }
+        }
+        
+        RCLCPP_INFO(this->get_logger(), 
+                    "Normals validation: Total=%zu, Non-zero=%zu (%.1f%%), NaN=%zu (%.1f%%), Zero=%zu (%.1f%%)",
+                    total_normals, non_zero_count, (non_zero_count * 100.0 / total_normals),
+                    nan_count, (nan_count * 100.0 / total_normals),
+                    total_normals - non_zero_count - nan_count, 
+                    ((total_normals - non_zero_count - nan_count) * 100.0 / total_normals));
 
         // Combine pointcloud with normals
         std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
-        // Print x,y,z,nx,ny,nz for the bottom-left pixel (u=0, v=height-1)
-        if (width == 0 || height == 0)
+        // Print x,y,z,nx,ny,nz for pixels at (36-38, 283)
+        if (width > 38 && height > 283)
         {
-            RCLCPP_ERROR(this->get_logger(), "Image has zero width or height");
-        }
-        else
-        {
-            size_t u = 0;
-            size_t v = static_cast<size_t>(height) - 1; // bottom row
-            size_t idx = v * static_cast<size_t>(width) + u;
-            size_t base = idx * 6; // 6 values per point: x,y,z,nx,ny,nz
-
-            if (base + 5 < points_with_normals.size())
+            RCLCPP_INFO(this->get_logger(), "Pixels at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
             {
-            float px = points_with_normals[base + 0];
-            float py = points_with_normals[base + 1];
-            float pz = points_with_normals[base + 2];
-            float nx = points_with_normals[base + 3];
-            float ny = points_with_normals[base + 4];
-            float nz = points_with_normals[base + 5];
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                size_t base = idx * 6; // 6 values per point: x,y,z,nx,ny,nz
 
-            RCLCPP_INFO(this->get_logger(),
-                    "Bottom-left pixel (u=%zu, v=%zu, idx=%zu): x=%.6f y=%.6f z=%.6f nx=%.6f ny=%.6f nz=%.6f",
-                    u, v, idx, px, py, pz, nx, ny, nz);
-            }
-            else
-            {
-            RCLCPP_ERROR(this->get_logger(), "points_with_normals too small for bottom-left index (base=%zu, size=%zu)",
-                     base, points_with_normals.size());
+                if (base + 5 < points_with_normals.size())
+                {
+                    float px = points_with_normals[base + 0];
+                    float py = points_with_normals[base + 1];
+                    float pz = points_with_normals[base + 2];
+                    float nx = points_with_normals[base + 3];
+                    float ny = points_with_normals[base + 4];
+                    float nz = points_with_normals[base + 5];
+
+                    RCLCPP_INFO(this->get_logger(),
+                            "  Pixel (u=%zu, v=%zu, idx=%zu): x=%.6f y=%.6f z=%.6f nx=%.6f ny=%.6f nz=%.6f",
+                            u, v, idx, px, py, pz, nx, ny, nz);
+                }
             }
         }
         // Check if combining failed (returns empty vector on error)
@@ -171,26 +193,6 @@ private:
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
         std::vector<float> points_with_theta_global = computePolarAngles(points_with_normals_global, width, height);
-        RCLCPP_INFO(this->get_logger(), "Computed polar angles from normals: First 5 values starting from the middle of the image:");
-        // Determine middle pixel index
-        uint32_t mid_x = width / 2;
-        uint32_t mid_y = height / 2;
-        size_t num_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
-        size_t mid_idx = static_cast<size_t>(mid_y) * static_cast<size_t>(width) + static_cast<size_t>(mid_x);
-        size_t start = (mid_idx < num_pixels) ? mid_idx : (num_pixels > 0 ? num_pixels / 2 : 0);
-        size_t count = 3;
-        size_t end = std::min(start + count, num_pixels);
-
-        // Print each selected theta (and optionally the associated XYZ)
-        for (size_t idx = start; idx < end; ++idx)
-        {
-            float x = points_with_theta_global[idx * 4 + 0];
-            float y = points_with_theta_global[idx * 4 + 1];
-            float z = points_with_theta_global[idx * 4 + 2];
-            float theta = points_with_theta_global[idx * 4 + 3];
-            RCLCPP_INFO(this->get_logger(), "  [%zu] x=%.3f y=%.3f z=%.3f theta=%.6f", idx, x, y, z, theta);
-        }
-
         
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_global, width, height);
@@ -253,6 +255,26 @@ private:
         size_t num_pixels = width * height;
         std::vector<float> points_with_normals_global(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
         
+        // Print 3 points at row 283, columns 36-38 BEFORE transformation
+        if (height > 283 && width > 38)
+        {
+            RCLCPP_INFO(this->get_logger(), "BEFORE transformation - Points at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * width + u;
+                float px = points_with_normals[idx * 6 + 0];
+                float py = points_with_normals[idx * 6 + 1];
+                float pz = points_with_normals[idx * 6 + 2];
+                float nx = points_with_normals[idx * 6 + 3];
+                float ny = points_with_normals[idx * 6 + 4];
+                float nz = points_with_normals[idx * 6 + 5];
+                RCLCPP_INFO(this->get_logger(), 
+                           "  Point[%zu] (u=%zu, v=%zu): x=%.6f y=%.6f z=%.6f nx=%.6f ny=%.6f nz=%.6f",
+                           idx, u, v, px, py, pz, nx, ny, nz);
+            }
+        }
+
         // Transform each point and its normal vector to the global frame
         for (size_t i = 0; i < num_pixels; ++i)
         {
@@ -281,6 +303,26 @@ private:
             points_with_normals_global[i * 6 + 3] = normal_global.x();
             points_with_normals_global[i * 6 + 4] = normal_global.y();
             points_with_normals_global[i * 6 + 5] = normal_global.z();
+        }
+
+        // Print 3 points at row 283, columns 36-38 AFTER transformation
+        if (height > 283 && width > 38)
+        {
+            RCLCPP_INFO(this->get_logger(), "AFTER transformation - Points at row 283, columns 36-38 (GLOBAL frame):");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * width + u;
+                float px = points_with_normals_global[idx * 6 + 0];
+                float py = points_with_normals_global[idx * 6 + 1];
+                float pz = points_with_normals_global[idx * 6 + 2];
+                float nx = points_with_normals_global[idx * 6 + 3];
+                float ny = points_with_normals_global[idx * 6 + 4];
+                float nz = points_with_normals_global[idx * 6 + 5];
+                RCLCPP_INFO(this->get_logger(), 
+                           "  Point[%zu] (u=%zu, v=%zu): x=%.6f y=%.6f z=%.6f nx=%.6f ny=%.6f nz=%.6f",
+                           idx, u, v, px, py, pz, nx, ny, nz);
+            }
         }
         
         return points_with_normals_global;
@@ -317,19 +359,47 @@ private:
             points_with_theta_global[i * 4 + 3] = theta;
         }
         
+        // Print theta for pixels at row 283, columns 36-38
+        if (width > 38 && height > 283)
+        {
+            RCLCPP_INFO(this->get_logger(), "Theta values for pixels at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                float x = points_with_theta_global[idx * 4 + 0];
+                float y = points_with_theta_global[idx * 4 + 1];
+                float z = points_with_theta_global[idx * 4 + 2];
+                float theta = points_with_theta_global[idx * 4 + 3];
+                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f theta=%.6f", 
+                           idx, u, v, x, y, z, theta);
+            }
+        }
+
         return points_with_theta_global;
     }
     
     std::vector<float> computeTraversabilityCost(const std::vector<float>& points_with_theta_global,
                                                   uint32_t width, uint32_t height)
     {
+        // Print first pixel for debugging
+        if (!points_with_theta_global.empty())
+        {
+            float x0 = points_with_theta_global[0];
+            float y0 = points_with_theta_global[1];
+            float z0 = points_with_theta_global[2];
+            float theta0 = points_with_theta_global[3];
+            RCLCPP_INFO(this->get_logger(), "First pixel in computeTraversabilityCost: x=%.6f y=%.6f z=%.6f theta=%.6f", 
+                       x0, y0, z0, theta0);
+        }
+        
         // Create output vector for points with traversability costs
         // Format: [x, y, z, cost] for each point
         size_t num_pixels = width * height;
         std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
         
-        // Cost function: C = 103.35 * theta²
-        const float cost_coefficient = 103.35f;
+        // Cost function: C = 102.94 * theta²
+        const float cost_coefficient = 102.94f;
         
         // Compute cost for each point
         for (size_t i = 0; i < num_pixels; ++i)
@@ -359,7 +429,10 @@ private:
             points_with_costs[i * 4 + 2] = z_global;
             points_with_costs[i * 4 + 3] = cost;
         }
+
+
         //TODO make into correct type for costmap (now it is x,y,z,cost)
+        //TODO Assign 255 when theta is 0 or nan and figure out what to do when x and y are nan using the nav_msgs/msg/OccupancyGrid type
         return points_with_costs;
     }
 
