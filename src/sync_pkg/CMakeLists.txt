@@ -63,6 +63,16 @@ ament_target_dependencies(publisher_all_data
   OpenCV
 )
 
+add_executable(new_publisher_all_data src/input_publisher_nodes/new_publisher_all_data.cpp)
+ament_target_dependencies(new_publisher_all_data
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  geometry_msgs
+  OpenCV
+)
+
 add_executable(publisher_sync_data src/sync_publisher_nodes/sync_node.cpp)
 ament_target_dependencies(publisher_sync_data
   rclcpp
@@ -130,6 +140,7 @@ install(TARGETS
   test_publisher_sync_data
   sync_service_node
   sync_client_node
+  new_publisher_all_data
   DESTINATION lib/${PROJECT_NAME}
 )
 

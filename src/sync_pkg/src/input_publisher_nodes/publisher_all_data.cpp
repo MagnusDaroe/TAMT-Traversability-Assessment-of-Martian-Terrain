@@ -128,7 +128,25 @@ private:
             }
         }
         
-        std::sort(dataset_dirs.begin(), dataset_dirs.end());
+        // Sort numerically by extracting the number after "data_"
+        std::sort(dataset_dirs.begin(), dataset_dirs.end(), 
+            [](const fs::path &a, const fs::path &b) {
+                std::string name_a = a.filename().string();
+                std::string name_b = b.filename().string();
+                
+                // Extract numeric part after "data_"
+                size_t pos_a = name_a.find("data_");
+                size_t pos_b = name_b.find("data_");
+                
+                if (pos_a != std::string::npos && pos_b != std::string::npos) {
+                    int num_a = std::stoi(name_a.substr(pos_a + 5));
+                    int num_b = std::stoi(name_b.substr(pos_b + 5));
+                    return num_a < num_b;
+                }
+                
+                // Fallback to lexicographical if parsing fails
+                return name_a < name_b;
+            });
         
         RCLCPP_INFO(get_logger(), "Found %zu dataset directories", dataset_dirs.size());
         
@@ -392,11 +410,11 @@ private:
         msg.is_bigendian = false;
         msg.step = width * sizeof(float);
         
-        // Convert mm to meters
+        // Unit in meters
         msg.data.resize(height * width * sizeof(float));
         float* data_ptr = reinterpret_cast<float*>(msg.data.data());
         for (size_t i = 0; i < depth_data.size(); ++i) {
-            data_ptr[i] = depth_data[i] / 1000.0f;
+            data_ptr[i] = depth_data[i];
         }
         
         depth_pub_->publish(msg);

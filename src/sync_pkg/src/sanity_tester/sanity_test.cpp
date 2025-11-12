@@ -115,9 +115,17 @@ private:
             RCLCPP_WARN(this->get_logger(), "Failed to save point cloud");
         }
 
-        RCLCPP_INFO(this->get_logger(), "Saved frame %d", frame_counter_);
-
-        // Clear data for next frame
+        // Log timestamps of synchronized messages
+        double rgb_time = latest_rgb_->header.stamp.sec + latest_rgb_->header.stamp.nanosec * 1e-9;
+        double depth_time = latest_depth_->header.stamp.sec + latest_depth_->header.stamp.nanosec * 1e-9;
+        double pose_time = latest_pose_->header.stamp.sec + latest_pose_->header.stamp.nanosec * 1e-9;
+        double pc_time = latest_pc_->header.stamp.sec + latest_pc_->header.stamp.nanosec * 1e-9;
+        
+        RCLCPP_INFO(this->get_logger(), 
+                    "Saved frame %d | Timestamps - RGB: %.3f, Depth: %.3f, Pose: %.3f, PC: %.3f", 
+                    frame_counter_, rgb_time, depth_time, pose_time, pc_time);
+    
+        // reset latest messages
         latest_rgb_.reset();
         latest_depth_.reset();
         latest_pose_.reset();
