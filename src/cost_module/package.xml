@@ -24,6 +24,11 @@
   <!-- ROS 2 Python dependencies -->
   <depend>rclpy</depend>
 
+  <!-- Launch file dependencies -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
   <!-- System dependencies -->
   <!-- <depend>libopencv-dev</depend> -->
 

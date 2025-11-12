@@ -97,6 +97,18 @@ private:
         cam_to_global_transform_.setOrigin(translation);
         cam_to_global_transform_.setRotation(rotation);
         
+        // Apply 208 degree rotation around x-axis
+        tf2::Quaternion rotation_x;
+        //rotation_x.setRPY(180.0 * M_PI / 180.0, 0, 0); // 180 degrees around x-axis
+        rotation_x.setRPY(208.0 * M_PI / 180.0, 0, 0); // 208 degrees around x-axis //! Does the 28 degree calibration
+        tf2::Transform rotation_transform;
+        rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
+        rotation_transform.setRotation(rotation_x);
+        cam_to_global_transform_ = cam_to_global_transform_ * rotation_transform;
+
+        //cam_to_global_transform_ = cam_to_global_transform_.inverse(); //! Should be deleted, when the correct transform is published
+        
+        
         RCLCPP_DEBUG(this->get_logger(), 
                      "Updated camera to global transform: Translation [%.2f, %.2f, %.2f]",
                      translation.x(), translation.y(), translation.z());
@@ -382,17 +394,6 @@ private:
     std::vector<float> computeTraversabilityCost(const std::vector<float>& points_with_theta_global,
                                                   uint32_t width, uint32_t height)
     {
-        // Print first pixel for debugging
-        if (!points_with_theta_global.empty())
-        {
-            float x0 = points_with_theta_global[0];
-            float y0 = points_with_theta_global[1];
-            float z0 = points_with_theta_global[2];
-            float theta0 = points_with_theta_global[3];
-            RCLCPP_INFO(this->get_logger(), "First pixel in computeTraversabilityCost: x=%.6f y=%.6f z=%.6f theta=%.6f", 
-                       x0, y0, z0, theta0);
-        }
-        
         // Create output vector for points with traversability costs
         // Format: [x, y, z, cost] for each point
         size_t num_pixels = width * height;
@@ -413,13 +414,13 @@ private:
             
             // Compute cost
             float cost;
-            if (std::isnan(theta))
+            if (std::isnan(theta) || theta == 0.0f)
             {
-                cost = std::numeric_limits<float>::quiet_NaN();
+                cost = 255.0f;
             }
             else
             {
-                // Compute cost: C = 103.35 * theta² (theta in radians)
+                // Compute cost: C = 102.94 * theta² (theta in radians)
                 cost = cost_coefficient * theta * theta;
             }
             
@@ -429,7 +430,23 @@ private:
             points_with_costs[i * 4 + 2] = z_global;
             points_with_costs[i * 4 + 3] = cost;
         }
-
+        
+        // Print cost for pixels at row 283, columns 36-38
+        if (width > 38 && height > 283)
+        {
+            RCLCPP_INFO(this->get_logger(), "Cost values for pixels at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                float x = points_with_costs[idx * 4 + 0];
+                float y = points_with_costs[idx * 4 + 1];
+                float z = points_with_costs[idx * 4 + 2];
+                float cost = points_with_costs[idx * 4 + 3];
+                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f cost=%.6f", 
+                           idx, u, v, x, y, z, cost);
+            }
+        }
 
         //TODO make into correct type for costmap (now it is x,y,z,cost)
         //TODO Assign 255 when theta is 0 or nan and figure out what to do when x and y are nan using the nav_msgs/msg/OccupancyGrid type
