@@ -4,6 +4,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2/LinearMath/Transform.h>
+#include <nav2_msgs/msg/costmap.hpp>
 #include <cmath>
 #include <vector>
 #include <memory>
@@ -56,11 +57,11 @@ public:
             std::bind(&CostmapSNE::surfaceNormalsCallback, this, std::placeholders::_1)
         );
 
-        //TODO Create publisher for costmap
-        // costmap_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-        //     "/sne_costmap",
-        //     10
-        // );
+        // Create publisher for costmap
+        costmap_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+            "/costmap_sne",
+            10
+        );
 
         RCLCPP_INFO(this->get_logger(), "CostmapSNE node initialized");
     }
@@ -74,10 +75,13 @@ private:
     }
     
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-    {
+    {        
         // Process camera to global pose
         RCLCPP_DEBUG(this->get_logger(), "Received camera to global pose at time %.2f", 
                      msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9);
+
+        // Store timestamp for use in costmap message
+        latest_pose_timestamp_ = msg->header.stamp;
 
         // Convert PoseStamped to tf2::Transform
         tf2::Vector3 translation(
@@ -208,6 +212,9 @@ private:
         
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_global, width, height);
+
+        // Publish costmap
+        publishCostmap(traversability_costs, width, height);
 
         RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
     }
@@ -453,17 +460,82 @@ private:
         return points_with_costs;
     }
 
+    void publishCostmap(const std::vector<float>& points_with_costs, uint32_t width, uint32_t height)
+    {
+        // Create Costmap message
+        auto costmap_msg = nav2_msgs::msg::Costmap();
+        
+        // Set header
+        costmap_msg.header.stamp = latest_pose_timestamp_;
+        costmap_msg.header.frame_id = "map"; // or use your global frame
+        
+        // Set metadata
+        costmap_msg.metadata.size_x = width;
+        costmap_msg.metadata.size_y = height;
+        costmap_msg.metadata.resolution = 0.05; // 5cm per cell - adjust as needed
+        
+        // Set origin (position of cell (0,0) in the map frame)
+        // Use the first point's coordinates as the origin
+        costmap_msg.metadata.origin.position.x = points_with_costs[0]; // x of first point
+        costmap_msg.metadata.origin.position.y = points_with_costs[1]; // y of first point
+        costmap_msg.metadata.origin.position.z = points_with_costs[2]; // z of first point
+        
+        // Set orientation from cam_to_global_transform_
+        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation();
+        costmap_msg.metadata.origin.orientation.x = origin_orientation.x();
+        costmap_msg.metadata.origin.orientation.y = origin_orientation.y();
+        costmap_msg.metadata.origin.orientation.z = origin_orientation.z();
+        costmap_msg.metadata.origin.orientation.w = origin_orientation.w();
+        
+        // Allocate data array
+        costmap_msg.data.resize(width * height);
+        
+        // Convert cost values to costmap format (0-254 scale, 255 for lethal obstacle, UNKNOWN for invalid)
+        for (size_t i = 0; i < width * height; ++i)
+        {
+            float cost = points_with_costs[i * 4 + 3]; // Extract cost from [x, y, z, cost]
+            
+            if (std::isnan(cost))
+            {
+                // Unknown/invalid cells - use NO_INFORMATION or FREE_SPACE
+                costmap_msg.data[i] = 255; // NO_INFORMATION in nav2
+            }
+            else if (cost >= 255.0f)
+            {
+                // Maximum cost (lethal obstacle)
+                costmap_msg.data[i] = 254; // LETHAL_OBSTACLE
+            }
+            else
+            {
+                // Scale cost to 0-254 range
+                // Assuming max cost before clamping is around 102.94 * (π/2)² ≈ 254
+                uint8_t costmap_value = static_cast<uint8_t>(std::min(254.0f, cost));
+                costmap_msg.data[i] = costmap_value;
+            }
+        }
+        
+        // Publish the costmap
+        costmap_pub_->publish(costmap_msg);
+        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width, height);
+    }
+
     
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr surface_normals_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     
+    // Publisher
+    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_pub_;
+    
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
 
     // Camera to global transformation (tf2::Transform)
     tf2::Transform cam_to_global_transform_;
+    
+    // Latest pose timestamp for costmap synchronization
+    rclcpp::Time latest_pose_timestamp_;
     
     // Camera parameters
     double fov_x_;
@@ -484,3 +556,9 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
+
+
+//TODO average cost over pixels to fit cell size of costmap
+//TODO Figure out size of costmap and set metadata accordingly (depth x something with FOV)
+//TODO Find coordinates of costmap origin (pixel 0,0 in global frame)
+//TODO Create service client to call sync_node to get synchronized data
