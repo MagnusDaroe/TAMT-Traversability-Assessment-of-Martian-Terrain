@@ -4,15 +4,13 @@ costmap_sne:
     camera:
       fov_x: 90.0  # Field of view in X direction (degrees)
       fov_y: 60.0  # Field of view in Y direction (degrees)
-      mounting_angle: 15.0  # Camera mounting angle relative to horizontal (degrees)
-      height: 1.5  # Camera height above ground (meters)
+      max_distance: 5.0  # Maximum sensing distance (meters)
+
     
     #! Rover parameters
     rover:
       width: 1.0  # Rover width (meters)
       length: 1.2  # Rover length (meters)
-      wheelbase: 0.8  # Distance between front and rear axles (meters)
-      track_width: 0.6  # Distance between left and right wheels (meters)
     
     #! Class risk parameters
     # These class risks should be set in the interval from [0-1], where 

@@ -18,21 +18,19 @@ public:
         // Declare parameters with default values (can be overridden by YAML file)
         this->declare_parameter("camera.fov_x", 90.0);
         this->declare_parameter("camera.fov_y", 60.0);
-        this->declare_parameter("camera.mounting_angle", 0.0);
-        this->declare_parameter("camera.height", 1.0);
+        this->declare_parameter("camera.max_distance", 5.0);
         this->declare_parameter("rover.width", 1.0);
         this->declare_parameter("rover.length", 1.5);
         
         // Get parameters from YAML file (or use defaults)
         fov_x_ = this->get_parameter("camera.fov_x").as_double();
         fov_y_ = this->get_parameter("camera.fov_y").as_double();
-        mounting_angle_ = this->get_parameter("camera.mounting_angle").as_double();
-        camera_height_ = this->get_parameter("camera.height").as_double();
+        max_distance_ = this->get_parameter("camera.max_distance").as_double();
         rover_width_ = this->get_parameter("rover.width").as_double();
         rover_length_ = this->get_parameter("rover.length").as_double();
         
-        RCLCPP_INFO(this->get_logger(), "Loaded camera parameters - FOV X: %.1f°, FOV Y: %.1f°, Mounting angle: %.1f°, Height: %.2fm",
-                    fov_x_, fov_y_, mounting_angle_, camera_height_);
+        RCLCPP_INFO(this->get_logger(), "Loaded camera parameters - FOV X: %.1f°, FOV Y: %.1f°, Max distance: %.2fm",
+                    fov_x_, fov_y_, max_distance_);
         RCLCPP_INFO(this->get_logger(), "Loaded rover parameters - Width: %.2fm, Length: %.2fm",
                     rover_width_, rover_length_);
         
@@ -108,10 +106,7 @@ private:
         tf2::Transform rotation_transform;
         rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
         rotation_transform.setRotation(rotation_x);
-        cam_to_global_transform_ = cam_to_global_transform_ * rotation_transform;
-
-        //cam_to_global_transform_ = cam_to_global_transform_.inverse(); //! Should be deleted, when the correct transform is published
-        
+        cam_to_global_transform_ = cam_to_global_transform_ * rotation_transform;        
         
         RCLCPP_DEBUG(this->get_logger(), 
                      "Updated camera to global transform: Translation [%.2f, %.2f, %.2f]",
@@ -140,37 +135,10 @@ private:
 
         uint32_t width = msg->width;
         uint32_t height = msg->height;
-        
-        // Debug: Check if normals data contains valid non-zero values
-        size_t total_normals = width * height;
-        size_t non_zero_count = 0;
-        size_t nan_count = 0;
-        
-        for (size_t i = 0; i < total_normals; ++i)
-        {
-            float nx = normals_camera[i * 3 + 0];
-            float ny = normals_camera[i * 3 + 1];
-            float nz = normals_camera[i * 3 + 2];
-            
-            if (std::isnan(nx) || std::isnan(ny) || std::isnan(nz))
-            {
-                nan_count++;
-            }
-            else if (nx != 0.0f || ny != 0.0f || nz != 0.0f)
-            {
-                non_zero_count++;
-            }
-        }
-        
-        RCLCPP_INFO(this->get_logger(), 
-                    "Normals validation: Total=%zu, Non-zero=%zu (%.1f%%), NaN=%zu (%.1f%%), Zero=%zu (%.1f%%)",
-                    total_normals, non_zero_count, (non_zero_count * 100.0 / total_normals),
-                    nan_count, (nan_count * 100.0 / total_normals),
-                    total_normals - non_zero_count - nan_count, 
-                    ((total_normals - non_zero_count - nan_count) * 100.0 / total_normals));
 
         // Combine pointcloud with normals
-        std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
+        std::vector<float> points_with_normals_cropped = combinePointcloudWithNormals(normals_camera, width, height);
+
         // Print x,y,z,nx,ny,nz for pixels at (36-38, 283)
         if (width > 38 && height > 283)
         {
@@ -204,7 +172,7 @@ private:
         }
 
         // Transform normals to global frame using pointcloud coordinates
-        std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals, width, height);
+        std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals_cropped, width, height);
         RCLCPP_INFO(this->get_logger(), "Transformed normals to global frame");
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
@@ -241,6 +209,8 @@ private:
         const uint8_t* pc_data = sync_pointcloud_->data.data();
         uint32_t point_step = sync_pointcloud_->point_step;
         
+        int points_beyond_max_distance = 0;
+        
         // Iterate through each point
         for (size_t i = 0; i < num_pixels; ++i)
         {
@@ -255,6 +225,15 @@ private:
             float ny = normals_camera[i * 3 + 1];
             float nz = normals_camera[i * 3 + 2];
             
+            // Set normals to [0, 0, 0] if z (depth) exceeds max_distance
+            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
+            {
+                nx = 0.0f;
+                ny = 0.0f;
+                nz = 0.0f;
+                points_beyond_max_distance++;
+            }
+            
             // Store combined data: [x, y, z, nx, ny, nz]
             points_with_normals[i * 6 + 0] = x;
             points_with_normals[i * 6 + 1] = y;
@@ -263,8 +242,13 @@ private:
             points_with_normals[i * 6 + 4] = ny;
             points_with_normals[i * 6 + 5] = nz;
         }
+
+        RCLCPP_DEBUG(this->get_logger(), 
+                     "Set normals to [0,0,0] for %d/%zu points beyond max_distance (%.2fm)",
+                     points_beyond_max_distance, num_pixels, max_distance_);
         
-        return points_with_normals;
+        
+        return points_with_normals_cropped;
     }
 
 
@@ -406,8 +390,8 @@ private:
         size_t num_pixels = width * height;
         std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
         
-        // Cost function: C = 102.94 * theta²
-        const float cost_coefficient = 102.94f;
+        // Cost function: C = 102.54 * theta²
+        const float cost_coefficient = 102.54f;
         
         // Compute cost for each point
         for (size_t i = 0; i < num_pixels; ++i)
@@ -427,7 +411,7 @@ private:
             }
             else
             {
-                // Compute cost: C = 102.94 * theta² (theta in radians)
+                // Compute cost: C = 102.54 * theta² (theta in radians)
                 cost = cost_coefficient * theta * theta;
             }
             
@@ -470,8 +454,11 @@ private:
         costmap_msg.header.frame_id = "map"; // or use your global frame
         
         // Set metadata
-        costmap_msg.metadata.size_x = width;
-        costmap_msg.metadata.size_y = height;
+        double fov_x_rad = fov_x_ * M_PI / 180.0;  // Convert FOV from degrees to radians
+        uint32_t costmap_width = static_cast<uint32_t>(2.0 * max_distance_ * std::cos(fov_x_rad / 2.0));
+        
+        costmap_msg.metadata.size_x = costmap_width;
+        costmap_msg.metadata.size_y = static_cast<uint32_t>(max_distance_);
         costmap_msg.metadata.resolution = 0.05; // 5cm per cell - adjust as needed
         
         // Set origin (position of cell (0,0) in the map frame)
@@ -507,9 +494,9 @@ private:
             }
             else
             {
-                // Scale cost to 0-254 range
-                // Assuming max cost before clamping is around 102.94 * (π/2)² ≈ 254
-                uint8_t costmap_value = static_cast<uint8_t>(std::min(254.0f, cost));
+                // Scale cost to 0-253 range
+                // Assuming max cost before clamping is around 102.54 * (π/2)² ≈ 253
+                uint8_t costmap_value = static_cast<uint8_t>(std::min(253.0f, cost));
                 costmap_msg.data[i] = costmap_value;
             }
         }
@@ -540,8 +527,7 @@ private:
     // Camera parameters
     double fov_x_;
     double fov_y_;
-    double mounting_angle_;
-    double camera_height_;
+    double max_distance_;
     
     // Rover parameters
     double rover_width_;
