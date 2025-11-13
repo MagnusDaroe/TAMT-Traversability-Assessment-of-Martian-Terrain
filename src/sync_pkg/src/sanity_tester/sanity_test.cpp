@@ -135,25 +135,28 @@ private:
     void rgbCallback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
     {
         latest_rgb_ = msg;
-        trySaveFrame();
+     //   trySaveFrame();
     }
 
     void depthCallback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
     {
         latest_depth_ = msg;
-        trySaveFrame();
+      //  trySaveFrame();
     }
 
     void poseCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
     {
         latest_pose_ = msg;
-        trySaveFrame();
+      //  trySaveFrame();
     }
 
     void pointcloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
     {
         latest_pc_ = msg;
-        trySaveFrame();
+      //  trySaveFrame();
+        if (latest_rgb_ && latest_depth_ && latest_pose_ && latest_pc_) {
+            trySaveFrame();
+        }
     }
 
     // Subscribers

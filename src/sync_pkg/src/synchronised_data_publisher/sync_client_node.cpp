@@ -25,9 +25,9 @@ public:
 
     // Set up a timer to call the service periodically
     timer_ = this->create_wall_timer(
-      5s, std::bind(&ClientNode::call_trigger_service, this));
+      2s, std::bind(&ClientNode::call_trigger_service, this));
     
-    RCLCPP_INFO(this->get_logger(), "Client node started. Calling service every 5 seconds...");
+    RCLCPP_INFO(this->get_logger(), "Client node started. Calling service every 2 seconds...");
   }
 
 private:
