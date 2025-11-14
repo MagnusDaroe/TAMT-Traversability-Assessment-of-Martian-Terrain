@@ -16,6 +16,8 @@
   <build_depend>interfaces</build_depend>
   <exec_depend>interfaces</exec_depend>
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>nav2_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>cv_bridge</depend>
   <depend>tf2</depend>

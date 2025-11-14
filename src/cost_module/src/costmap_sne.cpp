@@ -5,6 +5,9 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2/LinearMath/Transform.h>
 #include <nav2_msgs/msg/costmap.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <tuple>
+#include <algorithm>
 #include <cmath>
 #include <vector>
 #include <memory>
@@ -21,6 +24,7 @@ public:
         this->declare_parameter("camera.max_distance", 5.0);
         this->declare_parameter("rover.width", 1.0);
         this->declare_parameter("rover.length", 1.5);
+        this->declare_parameter("costmap.resolution", 0.05);
         
         // Get parameters from YAML file (or use defaults)
         fov_x_ = this->get_parameter("camera.fov_x").as_double();
@@ -28,11 +32,14 @@ public:
         max_distance_ = this->get_parameter("camera.max_distance").as_double();
         rover_width_ = this->get_parameter("rover.width").as_double();
         rover_length_ = this->get_parameter("rover.length").as_double();
+        resolution_ = this->get_parameter("costmap.resolution").as_double();
         
         RCLCPP_INFO(this->get_logger(), "Loaded camera parameters - FOV X: %.1f°, FOV Y: %.1f°, Max distance: %.2fm",
                     fov_x_, fov_y_, max_distance_);
         RCLCPP_INFO(this->get_logger(), "Loaded rover parameters - Width: %.2fm, Length: %.2fm",
                     rover_width_, rover_length_);
+        RCLCPP_INFO(this->get_logger(), "Loaded costmap parameters - Resolution: %.3fm",
+                    resolution_);
         
         // Subscribe to synchronized pointcloud topic
         pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -58,6 +65,12 @@ public:
         // Create publisher for costmap
         costmap_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
             "/costmap_sne",
+            10
+        );
+
+        // Create publisher for visualization in RViz2
+        costmap_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/costmap_sne_viz",
             10
         );
 
@@ -137,7 +150,7 @@ private:
         uint32_t height = msg->height;
 
         // Combine pointcloud with normals
-        std::vector<float> points_with_normals_cropped = combinePointcloudWithNormals(normals_camera, width, height);
+        std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
 
         // Print x,y,z,nx,ny,nz for pixels at (36-38, 283)
         if (width > 38 && height > 283)
@@ -172,7 +185,7 @@ private:
         }
 
         // Transform normals to global frame using pointcloud coordinates
-        std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals_cropped, width, height);
+        std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals, width, height);
         RCLCPP_INFO(this->get_logger(), "Transformed normals to global frame");
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
@@ -181,8 +194,12 @@ private:
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_global, width, height);
 
-        // Publish costmap
-        publishCostmap(traversability_costs, width, height);
+        // Create averaged cost grid
+        auto [averaged_grid, width_cells, height_cells, origin_x_cam, origin_y_cam] = createAveragedCostGrid(traversability_costs);
+        RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
+
+        // Publish costmap with the actual origin used for binning
+        publishCostmap(averaged_grid, width_cells, height_cells, origin_x_cam, origin_y_cam);
 
         RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
     }
@@ -248,7 +265,7 @@ private:
                      points_beyond_max_distance, num_pixels, max_distance_);
         
         
-        return points_with_normals_cropped;
+        return points_with_normals;
     }
 
 
@@ -439,12 +456,139 @@ private:
             }
         }
 
-        //TODO make into correct type for costmap (now it is x,y,z,cost)
-        //TODO Assign 255 when theta is 0 or nan and figure out what to do when x and y are nan using the nav_msgs/msg/OccupancyGrid type
         return points_with_costs;
     }
 
-    void publishCostmap(const std::vector<float>& points_with_costs, uint32_t width, uint32_t height)
+    // Create an averaged cost grid from per-point costs.
+    // Input: points_with_costs - vector with [x,y,z,cost] per point
+    // Output: tuple(grid, width_cells, height_cells, origin_x, origin_y)
+    // - grid: vector<float> of size width_cells*height_cells where each element is the
+    //         average cost of points falling into that cell (NaN if no points)
+    // - width_cells/height_cells: dimensions of the grid
+    // - origin_x/origin_y: coordinates of the first cell (0,0) in camera frame
+    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs)
+    {
+        // Compute FIXED map size in meters using camera FOV parameters (Option B)
+        double fov_x_rad = fov_x_ * M_PI / 180.0;
+        double fov_y_rad = fov_y_ * M_PI / 180.0;
+        
+        // Width: left to right extent of FOV at max_distance
+        double costmap_width_m = 2.0 * max_distance_ * std::tan(fov_x_rad / 2.0);
+        // Height: bottom to top extent of FOV at max_distance  
+        double costmap_height_m = 2.0 * max_distance_ * std::tan(fov_y_rad / 2.0);
+        
+        RCLCPP_INFO(this->get_logger(), "Fixed costmap size: width=%.3fm, height=%.3fm (FOV: %.1f°x%.1f°, max_dist: %.2fm)", 
+                    costmap_width_m, costmap_height_m, fov_x_, fov_y_, max_distance_);
+        
+        // Convert to number of cells (round up)
+        uint32_t width_cells = static_cast<uint32_t>(std::ceil(costmap_width_m / resolution_));
+        uint32_t height_cells = static_cast<uint32_t>(std::ceil(costmap_height_m / resolution_));
+
+        if (width_cells == 0 || height_cells == 0) {
+            RCLCPP_WARN(this->get_logger(), "Costmap has zero size: %ux%u", width_cells, height_cells);
+            return std::make_tuple(std::vector<float>(), width_cells, height_cells, 0.0f, 0.0f);
+        }
+
+        size_t num_cells = static_cast<size_t>(width_cells) * static_cast<size_t>(height_cells);
+        
+        // Calculate origin: Find the actual min/max of points to set grid bounds
+        // This ensures all valid points will fall within the grid
+        float min_x = std::numeric_limits<float>::infinity();
+        float min_y = std::numeric_limits<float>::infinity();
+        
+        for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
+        {
+            float x = points_with_costs[i + 0];
+            float y = points_with_costs[i + 1];
+            if (std::isfinite(x) && std::isfinite(y))
+            {
+                min_x = std::min(min_x, x);
+                min_y = std::min(min_y, y);
+            }
+        }
+        
+        if (!std::isfinite(min_x) || !std::isfinite(min_y))
+        {
+            RCLCPP_WARN(this->get_logger(), "No valid points found for costmap origin");
+            min_x = 0.0f;
+            min_y = 0.0f;
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Grid origin (min of points) in global frame: [%.3f, %.3f]", min_x, min_y);
+
+        // Accumulators for sum and count per cell
+        std::vector<double> sum(num_cells, 0.0);
+        std::vector<uint32_t> count(num_cells, 0);
+
+        // Bin points into cells
+        int points_binned = 0;
+        int points_out_of_bounds = 0;
+        int points_invalid = 0;
+        float sample_x = 0, sample_y = 0;  // Sample a valid point for debugging
+        bool found_sample = false;
+        
+        for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
+        {
+            float x = points_with_costs[i + 0];
+            float y = points_with_costs[i + 1];
+            float cost = points_with_costs[i + 3];
+
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(cost))
+            {
+                points_invalid++;
+                continue; // skip invalid
+            }
+            
+            // Sample first valid point for debugging
+            if (!found_sample) {
+                sample_x = x;
+                sample_y = y;
+                found_sample = true;
+            }
+
+            int ix = static_cast<int>(std::floor((x - min_x) / resolution_));
+            int iy = static_cast<int>(std::floor((y - min_y) / resolution_));
+
+            if (ix < 0 || iy < 0) {
+                points_out_of_bounds++;
+                continue;
+            }
+            if (static_cast<uint32_t>(ix) >= width_cells || static_cast<uint32_t>(iy) >= height_cells) {
+                points_out_of_bounds++;
+                continue;
+            }
+
+            size_t cell_idx = static_cast<size_t>(iy) * static_cast<size_t>(width_cells) + static_cast<size_t>(ix);
+            sum[cell_idx] += static_cast<double>(cost);
+            count[cell_idx] += 1;
+            points_binned++;
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
+                    points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
+        if (found_sample) {
+            RCLCPP_INFO(this->get_logger(), "Sample valid point in global frame: [%.3f, %.3f]", sample_x, sample_y);
+            RCLCPP_INFO(this->get_logger(), "Grid bounds: X[%.3f to %.3f], Y[%.3f to %.3f]", 
+                        min_x, min_x + costmap_width_m, min_y, min_y + costmap_height_m);
+        }
+
+        // Compute averages
+        std::vector<float> avg(num_cells, 255.0f);  // Default to 255 for empty cells
+        for (size_t ci = 0; ci < num_cells; ++ci)
+        {
+            if (count[ci] > 0)
+            {
+                avg[ci] = static_cast<float>(sum[ci] / static_cast<double>(count[ci]));
+            }
+            // otherwise leave as 255
+        }
+
+        return std::make_tuple(std::move(avg), width_cells, height_cells, min_x, min_y);
+    }
+
+
+
+    void publishCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y)
     {
         // Create Costmap message
         auto costmap_msg = nav2_msgs::msg::Costmap();
@@ -454,56 +598,141 @@ private:
         costmap_msg.header.frame_id = "map"; // or use your global frame
         
         // Set metadata
-        double fov_x_rad = fov_x_ * M_PI / 180.0;  // Convert FOV from degrees to radians
-        uint32_t costmap_width = static_cast<uint32_t>(2.0 * max_distance_ * std::cos(fov_x_rad / 2.0));
+        costmap_msg.metadata.size_x = width_cells;
+        costmap_msg.metadata.size_y = height_cells;
+        costmap_msg.metadata.resolution = resolution_;
         
-        costmap_msg.metadata.size_x = costmap_width;
-        costmap_msg.metadata.size_y = static_cast<uint32_t>(max_distance_);
-        costmap_msg.metadata.resolution = 0.05; // 5cm per cell - adjust as needed
+        // Apply 208 degree rotation around x-axis, then transform to global frame
+        tf2::Quaternion rotation_x;
+        rotation_x.setRPY(180.0 * M_PI / 180.0, 0, 0); // 208 degrees around x-axis
+        tf2::Transform rotation_transform;
+        rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
+        rotation_transform.setRotation(rotation_x);
+        
+        // Calculate origin in camera frame based on FOV
+        double fov_x_rad = fov_x_ * M_PI / 180.0;
+        //double fov_y_rad = fov_y_ * M_PI / 180.0;
+        float origin_x_camera = -cos((M_PI-fov_x_rad)/2)*max_distance_; 
+        float origin_y_camera = 0.0f;
+        float origin_z_camera = 0.0f; 
+        
+        // Transform origin: first apply 208° rotation, then cam_to_global_transform_
+        tf2::Vector3 origin_cam(origin_x_camera, origin_y_camera, origin_z_camera);
+        RCLCPP_INFO(this->get_logger(), "Origin in camera frame: [%.6f, %.6f, %.6f]", 
+                    origin_cam.x(), origin_cam.y(), origin_cam.z());
+        tf2::Vector3 origin_rotated = rotation_transform * origin_cam;
+        RCLCPP_INFO(this->get_logger(), "Origin after 180° rotation: [%.6f, %.6f, %.6f]", 
+                    origin_rotated.x(), origin_rotated.y(), origin_rotated.z());
+        
+        tf2::Vector3 origin_global = cam_to_global_transform_ * origin_rotated;
+        RCLCPP_INFO(this->get_logger(), "Origin in global frame: [%.6f, %.6f, %.6f]", 
+                    origin_global.x(), origin_global.y(), origin_global.z());
         
         // Set origin (position of cell (0,0) in the map frame)
-        // Use the first point's coordinates as the origin
-        costmap_msg.metadata.origin.position.x = points_with_costs[0]; // x of first point
-        costmap_msg.metadata.origin.position.y = points_with_costs[1]; // y of first point
-        costmap_msg.metadata.origin.position.z = points_with_costs[2]; // z of first point
+        costmap_msg.metadata.origin.position.x = origin_global.x();
+        costmap_msg.metadata.origin.position.y = origin_global.y();
+        costmap_msg.metadata.origin.position.z = origin_global.z();
         
-        // Set orientation from cam_to_global_transform_
-        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation();
+        // Set orientation: first apply 208° rotation, then cam_to_global_transform_
+        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation() * rotation_x;
         costmap_msg.metadata.origin.orientation.x = origin_orientation.x();
         costmap_msg.metadata.origin.orientation.y = origin_orientation.y();
         costmap_msg.metadata.origin.orientation.z = origin_orientation.z();
         costmap_msg.metadata.origin.orientation.w = origin_orientation.w();
         
         // Allocate data array
-        costmap_msg.data.resize(width * height);
+        costmap_msg.data.resize(width_cells * height_cells);
         
-        // Convert cost values to costmap format (0-254 scale, 255 for lethal obstacle, UNKNOWN for invalid)
-        for (size_t i = 0; i < width * height; ++i)
+        // Convert averaged costs directly to uint8_t (already in 0-255 range)
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
         {
-            float cost = points_with_costs[i * 4 + 3]; // Extract cost from [x, y, z, cost]
+            float cost = averaged_grid[i];
             
-            if (std::isnan(cost))
+            // Costs are already in 0-255 range from createAveragedCostGrid
+            // Just clamp and convert to uint8_t
+            if (cost >= 255.0f)
             {
-                // Unknown/invalid cells - use NO_INFORMATION or FREE_SPACE
-                costmap_msg.data[i] = 255; // NO_INFORMATION in nav2
+                costmap_msg.data[i] = 255;
             }
-            else if (cost >= 255.0f)
+            else if (cost <= 0.0f)
             {
-                // Maximum cost (lethal obstacle)
-                costmap_msg.data[i] = 254; // LETHAL_OBSTACLE
+                costmap_msg.data[i] = 0;
             }
             else
             {
-                // Scale cost to 0-253 range
-                // Assuming max cost before clamping is around 102.54 * (π/2)² ≈ 253
-                uint8_t costmap_value = static_cast<uint8_t>(std::min(253.0f, cost));
-                costmap_msg.data[i] = costmap_value;
+                costmap_msg.data[i] = static_cast<uint8_t>(cost);
             }
         }
         
         // Publish the costmap
         costmap_pub_->publish(costmap_msg);
-        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width, height);
+        
+        // Also publish as OccupancyGrid for RViz2 visualization
+        publishCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y);
+        
+        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
+    }
+
+    void publishCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y)
+    {
+        // Create OccupancyGrid message for RViz2 visualization
+        auto viz_msg = nav_msgs::msg::OccupancyGrid();
+        
+        // Set header
+        viz_msg.header.stamp = latest_pose_timestamp_;
+        viz_msg.header.frame_id = "map";
+        
+        // Set metadata
+        viz_msg.info.width = width_cells;
+        viz_msg.info.height = height_cells;
+        RCLCPP_INFO(this->get_logger(), "Costmap dimensions: width_cells=%u, height_cells=%u", width_cells, height_cells);
+        
+        viz_msg.info.resolution = resolution_;
+        viz_msg.info.map_load_time = latest_pose_timestamp_;
+        
+        // Use the EXACT origin that was used for binning in createAveragedCostGrid
+        // origin_x and origin_y are already in global frame
+        viz_msg.info.origin.position.x = origin_x;
+        viz_msg.info.origin.position.y = origin_y;
+        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
+        
+        // Set orientation: first apply 208° rotation, then cam_to_global_transform_
+        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation();
+        viz_msg.info.origin.orientation.x = origin_orientation.x();
+        viz_msg.info.origin.orientation.y = origin_orientation.y();
+        viz_msg.info.origin.orientation.z = origin_orientation.z();
+        viz_msg.info.origin.orientation.w = origin_orientation.w();
+        
+        // Allocate data array
+        viz_msg.data.resize(width_cells * height_cells);
+        
+        // Convert costs to OccupancyGrid format
+        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
+        // Scale our 0-255 costs to 0-100 range
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {
+            float cost = averaged_grid[i];
+            
+            if (cost >= 255.0f)
+            {
+                // Maximum cost or unknown
+                viz_msg.data[i] = 100;
+            }
+            else if (cost <= 0.0f)
+            {
+                // Free space
+                viz_msg.data[i] = 0;
+            }
+            else
+            {
+                // Scale 0-255 to 0-100
+                int8_t occupancy = static_cast<int8_t>((cost / 255.0f) * 100.0f);
+                viz_msg.data[i] = occupancy;
+            }
+        }
+        
+        // Publish the visualization costmap
+        costmap_viz_pub_->publish(viz_msg);
     }
 
     
@@ -512,8 +741,9 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     
-    // Publisher
+    // Publishers
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_viz_pub_;
     
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
@@ -532,6 +762,9 @@ private:
     // Rover parameters
     double rover_width_;
     double rover_length_;
+    
+    // Costmap parameters
+    double resolution_;
 };
 
 int main(int argc, char** argv)

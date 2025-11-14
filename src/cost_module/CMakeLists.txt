@@ -10,6 +10,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -42,6 +44,8 @@ ament_target_dependencies(costmap_sne
   rclcpp
   sensor_msgs
   geometry_msgs
+  nav_msgs
+  nav2_msgs
   tf2
   tf2_geometry_msgs
 )

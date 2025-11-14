@@ -1,0 +1,5 @@
+# Whenever someone wants to run the code in this branch they should use the following command to install all dependencies
+
+rosdep install --from-paths src --ignore-src -r -y
+colcon build
+
