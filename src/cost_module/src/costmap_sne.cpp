@@ -119,7 +119,7 @@ private:
         tf2::Transform rotation_transform;
         rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
         rotation_transform.setRotation(rotation_x);
-        cam_to_global_transform_ = cam_to_global_transform_ * rotation_transform;        
+        cam_to_global_transform_x = cam_to_global_transform_ * rotation_transform;        
         
         RCLCPP_DEBUG(this->get_logger(), 
                      "Updated camera to global transform: Translation [%.2f, %.2f, %.2f]",
@@ -310,11 +310,11 @@ private:
             
             // Transform point to global frame
             tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
-            tf2::Vector3 point_global = cam_to_global_transform_ * point_cam;
+            tf2::Vector3 point_global = cam_to_global_transform_x * point_cam;
             
             // Transform normal vector to global frame (rotation only, no translation)
             tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
-            tf2::Vector3 normal_global = cam_to_global_transform_.getBasis() * normal_cam;
+            tf2::Vector3 normal_global = cam_to_global_transform_x.getBasis() * normal_cam;
             
             // Store transformed data: [x, y, z, nx, ny, nz] in global frame
             points_with_normals_global[i * 6 + 0] = point_global.x();
@@ -616,7 +616,7 @@ private:
         float origin_y_camera = 0.0f;
         float origin_z_camera = 0.0f; 
         
-        // Transform origin: first apply 208° rotation, then cam_to_global_transform_
+        // Transform origin: first apply 208° rotation, then cam_to_global_transform_x
         tf2::Vector3 origin_cam(origin_x_camera, origin_y_camera, origin_z_camera);
         RCLCPP_INFO(this->get_logger(), "Origin in camera frame: [%.6f, %.6f, %.6f]", 
                     origin_cam.x(), origin_cam.y(), origin_cam.z());
@@ -624,7 +624,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "Origin after 180° rotation: [%.6f, %.6f, %.6f]", 
                     origin_rotated.x(), origin_rotated.y(), origin_rotated.z());
         
-        tf2::Vector3 origin_global = cam_to_global_transform_ * origin_rotated;
+        tf2::Vector3 origin_global = cam_to_global_transform_x * origin_rotated;
         RCLCPP_INFO(this->get_logger(), "Origin in global frame: [%.6f, %.6f, %.6f]", 
                     origin_global.x(), origin_global.y(), origin_global.z());
         
@@ -633,8 +633,8 @@ private:
         costmap_msg.metadata.origin.position.y = origin_global.y();
         costmap_msg.metadata.origin.position.z = origin_global.z();
         
-        // Set orientation: first apply 208° rotation, then cam_to_global_transform_
-        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation() * rotation_x;
+        // Set orientation: first apply 208° rotation, then cam_to_global_transform_x
+        tf2::Quaternion origin_orientation = cam_to_global_transform_x.getRotation() * rotation_x;
         costmap_msg.metadata.origin.orientation.x = origin_orientation.x();
         costmap_msg.metadata.origin.orientation.y = origin_orientation.y();
         costmap_msg.metadata.origin.orientation.z = origin_orientation.z();
@@ -696,12 +696,17 @@ private:
         viz_msg.info.origin.position.y = origin_y;
         viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
         
-        // Set orientation: first apply 208° rotation, then cam_to_global_transform_
-        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation();
+        // Set orientation: first apply 208° rotation, then cam_to_global_transform
+        tf2::Quaternion origin_orientation = cam_to_global_transform_x.getRotation();
         viz_msg.info.origin.orientation.x = origin_orientation.x();
         viz_msg.info.origin.orientation.y = origin_orientation.y();
         viz_msg.info.origin.orientation.z = origin_orientation.z();
         viz_msg.info.origin.orientation.w = origin_orientation.w();
+
+        // viz_msg.info.origin.orientation.x = 1;
+        // viz_msg.info.origin.orientation.y = 0;
+        // viz_msg.info.origin.orientation.z = 0;
+        // viz_msg.info.origin.orientation.w = 0;
         
         // Allocate data array
         viz_msg.data.resize(width_cells * height_cells);
@@ -750,6 +755,7 @@ private:
 
     // Camera to global transformation (tf2::Transform)
     tf2::Transform cam_to_global_transform_;
+    tf2::Transform cam_to_global_transform_x;
     
     // Latest pose timestamp for costmap synchronization
     rclcpp::Time latest_pose_timestamp_;
