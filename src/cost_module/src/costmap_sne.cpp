@@ -697,10 +697,10 @@ private:
         viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
         
         // Set orientation: first apply 208° rotation, then cam_to_global_transform
-        tf2::Quaternion origin_orientation = cam_to_global_transform_x.getRotation();
+        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation();
         viz_msg.info.origin.orientation.x = origin_orientation.x();
-        viz_msg.info.origin.orientation.y = origin_orientation.y();
-        viz_msg.info.origin.orientation.z = origin_orientation.z();
+        viz_msg.info.origin.orientation.y = 0;
+        viz_msg.info.origin.orientation.z = 0;
         viz_msg.info.origin.orientation.w = origin_orientation.w();
 
         // viz_msg.info.origin.orientation.x = 1;
