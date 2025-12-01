@@ -3,9 +3,10 @@ costmap_sne:
     #! Camera parameters
     camera:
       tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
-      fov_x: 90.0  # Field of view in X direction (degrees)
-      fov_y: 60.0  # Field of view in Y direction (degrees)
+      fov_x: 90.0  # Field of view in X direction (degrees) Horizontal
+      fov_y: 60.0  # Field of view in Y direction (degrees) Vertical
       max_distance: 5.0  # Maximum sensing distance (meters)
+      height: 1.0  # Camera height from ground (meters)
 
     
     #! Rover parameters
