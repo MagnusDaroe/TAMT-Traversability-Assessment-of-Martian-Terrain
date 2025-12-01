@@ -35,33 +35,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
-add_executable(publisher_depth src/input_publisher_nodes/publisher_depth.cpp)
-ament_target_dependencies(publisher_depth
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-)
-
-add_executable(publisher_rgb src/input_publisher_nodes/publisher_rgb.cpp)
-ament_target_dependencies(publisher_rgb
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-)
-
-add_executable(publisher_campose src/input_publisher_nodes/publisher_cam_pose.cpp)
-ament_target_dependencies(publisher_campose
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  geometry_msgs
-)
-
-add_executable(publisher_all_data src/input_publisher_nodes/publisher_all_data.cpp)
-ament_target_dependencies(publisher_all_data
+# This node publishes the (unsynchronised) raw data read from /data folder
+add_executable(publish_raw_data src/raw_data_publisher/raw_data_publisher.cpp)
+ament_target_dependencies(publish_raw_data
   rclcpp
   sensor_msgs
   ament_index_cpp
@@ -70,36 +46,7 @@ ament_target_dependencies(publisher_all_data
   OpenCV
 )
 
-add_executable(new_publisher_all_data src/input_publisher_nodes/new_publisher_all_data.cpp)
-ament_target_dependencies(new_publisher_all_data
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  geometry_msgs
-  OpenCV
-)
-
-add_executable(publisher_sync_data src/sync_publisher_nodes/sync_node.cpp)
-ament_target_dependencies(publisher_sync_data
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  message_filters
-)
-
-add_executable(test_publisher_sync_data src/sync_publisher_nodes/test_sync_node.cpp)
-ament_target_dependencies(test_publisher_sync_data
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  message_filters
-  OpenCV
-  geometry_msgs
-)
-
+# This node tests the synchronisation by subscribing to the synchronised data topic and saves in /sanity_data folder
 add_executable(sanity_test src/sanity_tester/sanity_test.cpp)
 ament_target_dependencies(sanity_test
   rclcpp
@@ -111,8 +58,10 @@ ament_target_dependencies(sanity_test
 )
 target_link_libraries(sanity_test ${OpenCV_LIBRARIES})
 
-add_executable(sync_service_node src/sync_service_nodes/sync_service_node.cpp)
-ament_target_dependencies(sync_service_node
+
+# This node provides a service to synchronise data and publish synchronised data topic
+add_executable(data_synchroniser src/synchronised_data_publisher/sync_service_node.cpp)
+ament_target_dependencies(data_synchroniser
   rclcpp
   sensor_msgs
   ament_index_cpp
@@ -122,8 +71,9 @@ ament_target_dependencies(sync_service_node
   geometry_msgs
 )
 
-add_executable(sync_client_node src/sync_service_nodes/sync_client_node.cpp)
-ament_target_dependencies(sync_client_node
+# This node is a client to trigger the synchronisation service request
+add_executable(data_synchroniser_client src/synchronised_data_publisher/sync_client_node.cpp)
+ament_target_dependencies(data_synchroniser_client
   rclcpp
   sensor_msgs
   ament_index_cpp
@@ -134,20 +84,14 @@ ament_target_dependencies(sync_client_node
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(sync_service_node "${cpp_typesupport_target}")
-target_link_libraries(sync_client_node "${cpp_typesupport_target}")
+target_link_libraries(data_synchroniser "${cpp_typesupport_target}")
+target_link_libraries(data_synchroniser_client "${cpp_typesupport_target}")
 
 install(TARGETS
-  publisher_depth
-  publisher_rgb 
-  publisher_campose
-  publisher_sync_data
-  publisher_all_data
+  publish_raw_data
   sanity_test
-  test_publisher_sync_data
-  sync_service_node
-  sync_client_node
-  new_publisher_all_data
+  data_synchroniser
+  data_synchroniser_client
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -18,7 +18,7 @@ Directory Structure:
   └── data_N/
 
 Command example:
-  ros2 run sync_pkg publisher_all_data --ros-args -p publish_frequency_hz:=0.5 -p loop_playback:=true
+  ros2 run sync_pkg publish_raw_data --ros-args -p publish_frequency_hz:=0.5 -p loop_playback:=true
 */
 
 #include <rclcpp/rclcpp.hpp>
