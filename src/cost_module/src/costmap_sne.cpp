@@ -300,15 +300,15 @@ private:
             float y_cam = points[i * 3 + 1];
             float z_cam = points[i * 3 + 2];
             
+            tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
+            tf2::Vector3 point_rover;
             if (normals) {
                 // Transform normal vector to rover frame (rotation only, no translation)
-                tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
-                tf2::Vector3 normal_rover = cam_x_to_rover_transform_.inverse().getBasis() * normal_cam;
+                point_rover = cam_x_to_rover_transform_.inverse().getBasis() * point_cam;
             }
             else {
                 // Transform point to rover frame
-                tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
-                tf2::Vector3 point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
+                point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
             }
                     
             // Store transformed data: [x, y, z, nx, ny, nz] in rover frame
