@@ -19,8 +19,6 @@ public:
     CostmapSNE() : Node("costmap_sne")
     {
         // Declare parameters with default values (can be overridden by YAML file)
-        this->declare_parameter("camera.height", 1.0);
-        this->declare_parameter("camera.tilt_angle", 20.0);
         this->declare_parameter("camera.fov_x", 90.0);
         this->declare_parameter("camera.fov_y", 60.0);
         this->declare_parameter("camera.max_distance", 5.0);
@@ -29,8 +27,6 @@ public:
         this->declare_parameter("costmap.resolution", 0.05);
         
         // Get parameters from YAML file (or use defaults)
-        camera_height_ = this->get_parameter("camera.height").as_double();
-        tilt_angle_ = this->get_parameter("camera.tilt_angle").as_double();
         fov_x_ = this->get_parameter("camera.fov_x").as_double();
         fov_y_ = this->get_parameter("camera.fov_y").as_double();
         max_distance_ = this->get_parameter("camera.max_distance").as_double();
@@ -52,6 +48,13 @@ public:
             std::bind(&CostmapSNE::pointcloudCallback, this, std::placeholders::_1)
         );
 
+        // Subscribe to synchronized pose topic
+        pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/sync_cam_2_glob_pose",
+            10,
+            std::bind(&CostmapSNE::poseCallback, this, std::placeholders::_1)
+        );
+
         // Subscribe to surface normals topic
         surface_normals_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/surface_normals",
@@ -70,32 +73,57 @@ public:
             "/costmap_sne_viz",
             10
         );
-        
-        tf2::Quaternion q_cam_x_to_rover;
-        q_cam_x_to_rover.setRPY((90.0 - tilt_angle_) * M_PI / 180.0, 0, -M_PI / 2);
-        RCLCPP_INFO(this->get_logger(), "q_cam_x_to_rover: x=%.6f, y=%.6f, z=%.6f, w=%.6f",
-                    q_cam_x_to_rover.x(), q_cam_x_to_rover.y(), q_cam_x_to_rover.z(), q_cam_x_to_rover.w());
-        cam_x_to_rover_transform_.setRotation(q_cam_x_to_rover);
-        cam_x_to_rover_transform_.setOrigin(tf2::Vector3(0.157499, 0.059899, 0.238857));
 
-        costmap_metrics_ = getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_);
-        
         RCLCPP_INFO(this->get_logger(), "CostmapSNE node initialized");
     }
 
 private:
-
-    struct costMapMetrics 
-    {
-    double origin[2] = {0.0, 0.0}; // origin[0]: x coordinate of closest left point, origin[1]: y coordinate of closest left point
-    double size[2] = {0.0, 0.0}; // size[0]: Height of the map, size[1]: Width of the map
-    };
-
     void pointcloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
         // Store the latest pointcloud
         sync_pointcloud_ = msg;
         RCLCPP_DEBUG(this->get_logger(), "Received pointcloud with %d points", msg->width * msg->height);
+    }
+    
+    void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {        
+        // Process camera to global pose
+        RCLCPP_DEBUG(this->get_logger(), "Received camera to global pose at time %.2f", 
+                     msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9);
+
+        // Store timestamp for use in costmap message
+        latest_pose_timestamp_ = msg->header.stamp;
+
+        // Convert PoseStamped to tf2::Transform
+        tf2::Vector3 translation(
+            msg->pose.position.x,
+            msg->pose.position.y,
+            msg->pose.position.z
+        );
+        
+        tf2::Quaternion rotation(
+            msg->pose.orientation.x,
+            msg->pose.orientation.y,
+            msg->pose.orientation.z,
+            msg->pose.orientation.w
+        );
+        
+        // Create the transformation from camera to global frame
+        cam_to_global_transform_.setOrigin(translation);
+        cam_to_global_transform_.setRotation(rotation);
+        
+        // Apply 208 degree rotation around x-axis
+        tf2::Quaternion rotation_x;
+        //rotation_x.setRPY(180.0 * M_PI / 180.0, 0, 0); // 180 degrees around x-axis
+        rotation_x.setRPY(208.0 * M_PI / 180.0, 0, 0); // 208 degrees around x-axis //! Does the 28 degree calibration
+        tf2::Transform rotation_transform;
+        rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
+        rotation_transform.setRotation(rotation_x);
+        cam_to_global_transform_x = cam_to_global_transform_ * rotation_transform;        
+        
+        RCLCPP_DEBUG(this->get_logger(), 
+                     "Updated camera to global transform: Translation [%.2f, %.2f, %.2f]",
+                     translation.x(), translation.y(), translation.z());
     }
 
     void surfaceNormalsCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -156,88 +184,24 @@ private:
             return;
         }
 
-        // Transform normals to rover frame using pointcloud coordinates
-        std::vector<float> points_with_normals_rover = transformToRoverFrame(points_with_normals, width, height);
-        RCLCPP_INFO(this->get_logger(), "Transformed normals to rover frame");
+        // Transform normals to global frame using pointcloud coordinates
+        std::vector<float> points_with_normals_global = transformToGlobalFrame(points_with_normals, width, height);
+        RCLCPP_INFO(this->get_logger(), "Transformed normals to global frame");
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
-        std::vector<float> points_with_theta_rover = computePolarAngles(points_with_normals_rover, width, height);
+        std::vector<float> points_with_theta_global = computePolarAngles(points_with_normals_global, width, height);
         
         // Compute traversability cost for each point based on polar angle
-        std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_rover, width, height);
-
+        std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_global, width, height);
 
         // Create averaged cost grid
-        auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(traversability_costs, costmap_metrics_);
+        auto [averaged_grid, width_cells, height_cells, origin_x_cam, origin_y_cam] = createAveragedCostGrid(traversability_costs);
         RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
 
         // Publish costmap with the actual origin used for binning
-        publishCostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y);
+        publishCostmap(averaged_grid, width_cells, height_cells, origin_x_cam, origin_y_cam);
 
-        RCLCPP_INFO(this->get_logger(), "Computed and published topography costmap");
-    }
-    
-    costMapMetrics getCostMapMetrics(double fov_horizontal, double fov_vertical, double camera_height, double camera_pitch, double max_ray_length) {
-        // Handle when camera is below ground level, handle when max_ray_length is less than camera height
-        if (camera_height < 0.0 || max_ray_length <= camera_height) {
-            throw std::invalid_argument("Camera height must be non-negative and less than max ray length.");
-        }
-        else if (fov_horizontal <= 0.0 || fov_vertical <= 0.0) {
-            throw std::invalid_argument("Field of view angles must be positive.");
-        }
-        else if (fov_horizontal >= 180.0 || fov_vertical >= 180.0) {
-            throw std::invalid_argument("Field of view angles must be less than 180 degrees.");
-        }
-        else if (max_ray_length <= 0.0) {
-            throw std::invalid_argument("Max ray length must be positive.");
-        }
-        else if (camera_pitch < 0 || camera_pitch > 90.0) {
-            throw std::invalid_argument("Camera pitch must be between 0 and 90 degrees.");
-        }
-
-        // Initialize the costMapMetrics structure to hold the results
-        costMapMetrics metrics;
-
-        // Calculate the half angle of the horizontal field of view in radians
-        double theta_horizontal = (fov_horizontal / 2.0) * M_PI / 180.0;
-
-        // Ray angles:
-        double top_ray_angle = (90.0 + (fov_vertical / 2.0) - camera_pitch);
-        double bottom_ray_angle = (90.0 - (fov_vertical / 2.0) - camera_pitch);
-
-        // Calculate min and max distances in the x direction. Min is the closest point the camera can see on the ground
-        double min_dist_x = std::max(0.0, std::tan(bottom_ray_angle * M_PI / 180.0) * camera_height);
-        
-        // Check if the top ray goes beyond vertical
-        double max_dist_x = 1.0;
-        double ray_limit = std::sqrt(max_ray_length * max_ray_length - camera_height * camera_height);
-        const double EPSILON = 1e-6; // Small tolerance for floating point comparison
-        
-        if (top_ray_angle >= 90.0 - EPSILON) {
-            max_dist_x = ray_limit; // Ray goes beyond vertical - limit by max ray length
-        } else { 
-            // Ray hits ground - calculate both limits
-            double ground_intersection = std::tan(top_ray_angle * M_PI / 180.0) * camera_height;  
-            max_dist_x = std::min(ray_limit, ground_intersection);
-        }
-        
-        // Calculate the y distance based on the max ray length and the horizontal field of view
-        double y_ray_restricted = std::tan(theta_horizontal) * std::cos(theta_horizontal) * max_ray_length;
-        double y_max_dist_x = std::tan(theta_horizontal) * std::sqrt(max_dist_x*max_dist_x + camera_height*camera_height);
-        double y = std::min(y_ray_restricted, y_max_dist_x);
-        
-        // Calculate size of the map
-        double height = max_dist_x - min_dist_x;
-        double width = 2.0 * y;
-
-        // Populate the metrics structure
-        metrics.origin[0] = min_dist_x;
-        metrics.origin[1] = y;
-
-        metrics.size[0] = height;
-        metrics.size[1] = width;
-
-        return metrics;
+        RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
     }
     
     // Combines pointcloud XYZ coordinates with their corresponding surface normals
@@ -305,11 +269,11 @@ private:
     }
 
 
-    std::vector<float> transformToRoverFrame(const std::vector<float>& points_with_normals, 
+    std::vector<float> transformToGlobalFrame(const std::vector<float>& points_with_normals, 
                                               uint32_t width, uint32_t height)
     {
         size_t num_pixels = width * height;
-        std::vector<float> points_with_normals_rover(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
+        std::vector<float> points_with_normals_global(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
         
         // Print 3 points at row 283, columns 36-38 BEFORE transformation
         if (height > 283 && width > 38)
@@ -331,7 +295,7 @@ private:
             }
         }
 
-        // Transform each point and its normal vector to the rover frame
+        // Transform each point and its normal vector to the global frame
         for (size_t i = 0; i < num_pixels; ++i)
         {
             // Extract point coordinates in camera frame
@@ -344,75 +308,75 @@ private:
             float ny_cam = points_with_normals[i * 6 + 4];
             float nz_cam = points_with_normals[i * 6 + 5];
             
-            // Transform point to rover frame
+            // Transform point to global frame
             tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
-            tf2::Vector3 point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
+            tf2::Vector3 point_global = cam_to_global_transform_x * point_cam;
             
-            // Transform normal vector to rover frame (rotation only, no translation)
+            // Transform normal vector to global frame (rotation only, no translation)
             tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
-            tf2::Vector3 normal_rover = cam_x_to_rover_transform_.inverse().getBasis() * normal_cam;
+            tf2::Vector3 normal_global = cam_to_global_transform_x.getBasis() * normal_cam;
             
-            // Store transformed data: [x, y, z, nx, ny, nz] in rover frame
-            points_with_normals_rover[i * 6 + 0] = point_rover.x();
-            points_with_normals_rover[i * 6 + 1] = point_rover.y();
-            points_with_normals_rover[i * 6 + 2] = point_rover.z();
-            points_with_normals_rover[i * 6 + 3] = normal_rover.x();
-            points_with_normals_rover[i * 6 + 4] = normal_rover.y();
-            points_with_normals_rover[i * 6 + 5] = normal_rover.z();
+            // Store transformed data: [x, y, z, nx, ny, nz] in global frame
+            points_with_normals_global[i * 6 + 0] = point_global.x();
+            points_with_normals_global[i * 6 + 1] = point_global.y();
+            points_with_normals_global[i * 6 + 2] = point_global.z();
+            points_with_normals_global[i * 6 + 3] = normal_global.x();
+            points_with_normals_global[i * 6 + 4] = normal_global.y();
+            points_with_normals_global[i * 6 + 5] = normal_global.z();
         }
 
         // Print 3 points at row 283, columns 36-38 AFTER transformation
         if (height > 283 && width > 38)
         {
-            RCLCPP_INFO(this->get_logger(), "AFTER transformation - Points at row 283, columns 36-38 (rover frame):");
+            RCLCPP_INFO(this->get_logger(), "AFTER transformation - Points at row 283, columns 36-38 (GLOBAL frame):");
             for (size_t u = 36; u <= 38; ++u)
             {
                 size_t v = 283;
                 size_t idx = v * width + u;
-                float px = points_with_normals_rover[idx * 6 + 0];
-                float py = points_with_normals_rover[idx * 6 + 1];
-                float pz = points_with_normals_rover[idx * 6 + 2];
-                float nx = points_with_normals_rover[idx * 6 + 3];
-                float ny = points_with_normals_rover[idx * 6 + 4];
-                float nz = points_with_normals_rover[idx * 6 + 5];
+                float px = points_with_normals_global[idx * 6 + 0];
+                float py = points_with_normals_global[idx * 6 + 1];
+                float pz = points_with_normals_global[idx * 6 + 2];
+                float nx = points_with_normals_global[idx * 6 + 3];
+                float ny = points_with_normals_global[idx * 6 + 4];
+                float nz = points_with_normals_global[idx * 6 + 5];
                 RCLCPP_INFO(this->get_logger(), 
                            "  Point[%zu] (u=%zu, v=%zu): x=%.6f y=%.6f z=%.6f nx=%.6f ny=%.6f nz=%.6f",
                            idx, u, v, px, py, pz, nx, ny, nz);
             }
         }
         
-        return points_with_normals_rover;
+        return points_with_normals_global;
     }
     
-    std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_rover, 
+    std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_global, 
                                                     uint32_t width, uint32_t height)
     {
         size_t num_pixels = width * height;
-        std::vector<float> points_with_theta_rover(num_pixels * 4); // 4 values per point: x, y, z, theta
+        std::vector<float> points_with_theta_global(num_pixels * 4); // 4 values per point: x, y, z, theta
         
         // Compute polar angle for each point's normal vector
         for (size_t i = 0; i < num_pixels; ++i)
         {
-            // Extract point coordinates in rover frame
-            float x_rover = points_with_normals_rover[i * 6 + 0];
-            float y_rover = points_with_normals_rover[i * 6 + 1];
-            float z_rover = points_with_normals_rover[i * 6 + 2];
+            // Extract point coordinates in global frame
+            float x_global = points_with_normals_global[i * 6 + 0];
+            float y_global = points_with_normals_global[i * 6 + 1];
+            float z_global = points_with_normals_global[i * 6 + 2];
             
-            // Extract normal vector components in rover frame
-            float nx_rover = points_with_normals_rover[i * 6 + 3];
-            float ny_rover = points_with_normals_rover[i * 6 + 4];
-            float nz_rover = points_with_normals_rover[i * 6 + 5];
+            // Extract normal vector components in global frame
+            float nx_global = points_with_normals_global[i * 6 + 3];
+            float ny_global = points_with_normals_global[i * 6 + 4];
+            float nz_global = points_with_normals_global[i * 6 + 5];
             
             // Compute polar angle θ (theta) using arctan formula
             // θ = arctan(√(nx² + ny²) / nz)
-            float xy_magnitude = std::sqrt(nx_rover * nx_rover + ny_rover * ny_rover);
-            float theta = std::atan2(xy_magnitude, nz_rover);
+            float xy_magnitude = std::sqrt(nx_global * nx_global + ny_global * ny_global);
+            float theta = std::atan2(xy_magnitude, nz_global);
             
-            // Store combined data: [x, y, z, theta] in rover frame
-            points_with_theta_rover[i * 4 + 0] = x_rover;
-            points_with_theta_rover[i * 4 + 1] = y_rover;
-            points_with_theta_rover[i * 4 + 2] = z_rover;
-            points_with_theta_rover[i * 4 + 3] = theta;
+            // Store combined data: [x, y, z, theta] in global frame
+            points_with_theta_global[i * 4 + 0] = x_global;
+            points_with_theta_global[i * 4 + 1] = y_global;
+            points_with_theta_global[i * 4 + 2] = z_global;
+            points_with_theta_global[i * 4 + 3] = theta;
         }
         
         // Print theta for pixels at row 283, columns 36-38
@@ -423,19 +387,19 @@ private:
             {
                 size_t v = 283;
                 size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_theta_rover[idx * 4 + 0];
-                float y = points_with_theta_rover[idx * 4 + 1];
-                float z = points_with_theta_rover[idx * 4 + 2];
-                float theta = points_with_theta_rover[idx * 4 + 3];
+                float x = points_with_theta_global[idx * 4 + 0];
+                float y = points_with_theta_global[idx * 4 + 1];
+                float z = points_with_theta_global[idx * 4 + 2];
+                float theta = points_with_theta_global[idx * 4 + 3];
                 RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f theta=%.6f", 
                            idx, u, v, x, y, z, theta);
             }
         }
 
-        return points_with_theta_rover;
+        return points_with_theta_global;
     }
     
-    std::vector<float> computeTraversabilityCost(const std::vector<float>& points_with_theta_rover,
+    std::vector<float> computeTraversabilityCost(const std::vector<float>& points_with_theta_global,
                                                   uint32_t width, uint32_t height)
     {
         // Create output vector for points with traversability costs
@@ -449,12 +413,12 @@ private:
         // Compute cost for each point
         for (size_t i = 0; i < num_pixels; ++i)
         {
-            // Get point coordinates from the points_with_theta_rover vector
+            // Get point coordinates from the points_with_theta_global vector
             // Input format: [x, y, z, theta] per point
-            float x_rover = points_with_theta_rover[i * 4 + 0];
-            float y_rover = points_with_theta_rover[i * 4 + 1];
-            float z_rover = points_with_theta_rover[i * 4 + 2];
-            float theta = points_with_theta_rover[i * 4 + 3];
+            float x_global = points_with_theta_global[i * 4 + 0];
+            float y_global = points_with_theta_global[i * 4 + 1];
+            float z_global = points_with_theta_global[i * 4 + 2];
+            float theta = points_with_theta_global[i * 4 + 3];
             
             // Compute cost
             float cost;
@@ -468,10 +432,10 @@ private:
                 cost = cost_coefficient * theta * theta;
             }
             
-            // Store combined data: [x, y, z, cost] in rover frame
-            points_with_costs[i * 4 + 0] = x_rover;
-            points_with_costs[i * 4 + 1] = y_rover;
-            points_with_costs[i * 4 + 2] = z_rover;
+            // Store combined data: [x, y, z, cost] in global frame
+            points_with_costs[i * 4 + 0] = x_global;
+            points_with_costs[i * 4 + 1] = y_global;
+            points_with_costs[i * 4 + 2] = z_global;
             points_with_costs[i * 4 + 3] = cost;
         }
         
@@ -495,18 +459,62 @@ private:
         return points_with_costs;
     }
 
-    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs, const costMapMetrics& costmap_metrics_)
+    // Create an averaged cost grid from per-point costs.
+    // Input: points_with_costs - vector with [x,y,z,cost] per point
+    // Output: tuple(grid, width_cells, height_cells, origin_x, origin_y)
+    // - grid: vector<float> of size width_cells*height_cells where each element is the
+    //         average cost of points falling into that cell (NaN if no points)
+    // - width_cells/height_cells: dimensions of the grid
+    // - origin_x/origin_y: coordinates of the first cell (0,0) in camera frame
+    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs)
     {
-        double origin_x = costmap_metrics_.origin[0];
-        double origin_y = costmap_metrics_.origin[1];
-        double costmap_height = costmap_metrics_.size[0];
-        double costmap_width = costmap_metrics_.size[1];
-
+        // Compute FIXED map size in meters using camera FOV parameters (Option B)
+        double fov_x_rad = fov_x_ * M_PI / 180.0;
+        double fov_y_rad = fov_y_ * M_PI / 180.0;
+        
+        // Width: left to right extent of FOV at max_distance
+        double costmap_width_m = 2.0 * max_distance_ * std::tan(fov_x_rad / 2.0);
+        // Height: bottom to top extent of FOV at max_distance  
+        double costmap_height_m = 2.0 * max_distance_ * std::tan(fov_y_rad / 2.0);
+        
+        RCLCPP_INFO(this->get_logger(), "Fixed costmap size: width=%.3fm, height=%.3fm (FOV: %.1f°x%.1f°, max_dist: %.2fm)", 
+                    costmap_width_m, costmap_height_m, fov_x_, fov_y_, max_distance_);
+        
         // Convert to number of cells (round up)
-        uint32_t width_cells = static_cast<uint32_t>(std::ceil(costmap_width / resolution_));
-        uint32_t height_cells = static_cast<uint32_t>(std::ceil(costmap_height / resolution_));
+        uint32_t width_cells = static_cast<uint32_t>(std::ceil(costmap_width_m / resolution_));
+        uint32_t height_cells = static_cast<uint32_t>(std::ceil(costmap_height_m / resolution_));
+
+        if (width_cells == 0 || height_cells == 0) {
+            RCLCPP_WARN(this->get_logger(), "Costmap has zero size: %ux%u", width_cells, height_cells);
+            return std::make_tuple(std::vector<float>(), width_cells, height_cells, 0.0f, 0.0f);
+        }
 
         size_t num_cells = static_cast<size_t>(width_cells) * static_cast<size_t>(height_cells);
+        
+        // Calculate origin: Find the actual min/max of points to set grid bounds
+        // This ensures all valid points will fall within the grid
+        float min_x = std::numeric_limits<float>::infinity();
+        float min_y = std::numeric_limits<float>::infinity();
+        
+        for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
+        {
+            float x = points_with_costs[i + 0];
+            float y = points_with_costs[i + 1];
+            if (std::isfinite(x) && std::isfinite(y))
+            {
+                min_x = std::min(min_x, x);
+                min_y = std::min(min_y, y);
+            }
+        }
+        
+        if (!std::isfinite(min_x) || !std::isfinite(min_y))
+        {
+            RCLCPP_WARN(this->get_logger(), "No valid points found for costmap origin");
+            min_x = 0.0f;
+            min_y = 0.0f;
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Grid origin (min of points) in global frame: [%.3f, %.3f]", min_x, min_y);
 
         // Accumulators for sum and count per cell
         std::vector<double> sum(num_cells, 0.0);
@@ -516,6 +524,8 @@ private:
         int points_binned = 0;
         int points_out_of_bounds = 0;
         int points_invalid = 0;
+        float sample_x = 0, sample_y = 0;  // Sample a valid point for debugging
+        bool found_sample = false;
         
         for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
         {
@@ -528,9 +538,16 @@ private:
                 points_invalid++;
                 continue; // skip invalid
             }
+            
+            // Sample first valid point for debugging
+            if (!found_sample) {
+                sample_x = x;
+                sample_y = y;
+                found_sample = true;
+            }
 
-            int ix = static_cast<int>(std::floor((x - origin_x) / resolution_));
-            int iy = static_cast<int>(std::floor((y - origin_y) / resolution_));
+            int ix = static_cast<int>(std::floor((x - min_x) / resolution_));
+            int iy = static_cast<int>(std::floor((y - min_y) / resolution_));
 
             if (ix < 0 || iy < 0) {
                 points_out_of_bounds++;
@@ -549,6 +566,11 @@ private:
         
         RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
                     points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
+        if (found_sample) {
+            RCLCPP_INFO(this->get_logger(), "Sample valid point in global frame: [%.3f, %.3f]", sample_x, sample_y);
+            RCLCPP_INFO(this->get_logger(), "Grid bounds: X[%.3f to %.3f], Y[%.3f to %.3f]", 
+                        min_x, min_x + costmap_width_m, min_y, min_y + costmap_height_m);
+        }
 
         // Compute averages
         std::vector<float> avg(num_cells, 255.0f);  // Default to 255 for empty cells
@@ -561,7 +583,7 @@ private:
             // otherwise leave as 255
         }
 
-        return std::make_tuple(std::move(avg), width_cells, height_cells, origin_x, origin_y);
+        return std::make_tuple(std::move(avg), width_cells, height_cells, min_x, min_y);
     }
 
 
@@ -573,23 +595,50 @@ private:
         
         // Set header
         costmap_msg.header.stamp = latest_pose_timestamp_;
-        costmap_msg.header.frame_id = "rover"; 
+        costmap_msg.header.frame_id = "map"; // or use your global frame
         
         // Set metadata
         costmap_msg.metadata.size_x = width_cells;
         costmap_msg.metadata.size_y = height_cells;
         costmap_msg.metadata.resolution = resolution_;
         
-        // Set origin (position of cell (0,0) in the map frame)
-        costmap_msg.metadata.origin.position.x = origin_x;
-        costmap_msg.metadata.origin.position.y = origin_y;
-        costmap_msg.metadata.origin.position.z = 0;
+        // Apply 208 degree rotation around x-axis, then transform to global frame
+        tf2::Quaternion rotation_x;
+        rotation_x.setRPY(180.0 * M_PI / 180.0, 0, 0); // 208 degrees around x-axis
+        tf2::Transform rotation_transform;
+        rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
+        rotation_transform.setRotation(rotation_x);
         
-        // Keep initial orientation X foward, Y left, Z up
-        costmap_msg.metadata.origin.orientation.x = 0;
-        costmap_msg.metadata.origin.orientation.y = 0;
-        costmap_msg.metadata.origin.orientation.z = 0;
-        costmap_msg.metadata.origin.orientation.w = 1;
+        // Calculate origin in camera frame based on FOV
+        double fov_x_rad = fov_x_ * M_PI / 180.0;
+        //double fov_y_rad = fov_y_ * M_PI / 180.0;
+        float origin_x_camera = -cos((M_PI-fov_x_rad)/2)*max_distance_; 
+        float origin_y_camera = 0.0f;
+        float origin_z_camera = 0.0f; 
+        
+        // Transform origin: first apply 208° rotation, then cam_to_global_transform_x
+        tf2::Vector3 origin_cam(origin_x_camera, origin_y_camera, origin_z_camera);
+        RCLCPP_INFO(this->get_logger(), "Origin in camera frame: [%.6f, %.6f, %.6f]", 
+                    origin_cam.x(), origin_cam.y(), origin_cam.z());
+        tf2::Vector3 origin_rotated = rotation_transform * origin_cam;
+        RCLCPP_INFO(this->get_logger(), "Origin after 180° rotation: [%.6f, %.6f, %.6f]", 
+                    origin_rotated.x(), origin_rotated.y(), origin_rotated.z());
+        
+        tf2::Vector3 origin_global = cam_to_global_transform_x * origin_rotated;
+        RCLCPP_INFO(this->get_logger(), "Origin in global frame: [%.6f, %.6f, %.6f]", 
+                    origin_global.x(), origin_global.y(), origin_global.z());
+        
+        // Set origin (position of cell (0,0) in the map frame)
+        costmap_msg.metadata.origin.position.x = origin_global.x();
+        costmap_msg.metadata.origin.position.y = origin_global.y();
+        costmap_msg.metadata.origin.position.z = origin_global.z();
+        
+        // Set orientation: first apply 208° rotation, then cam_to_global_transform_x
+        tf2::Quaternion origin_orientation = cam_to_global_transform_x.getRotation() * rotation_x;
+        costmap_msg.metadata.origin.orientation.x = origin_orientation.x();
+        costmap_msg.metadata.origin.orientation.y = origin_orientation.y();
+        costmap_msg.metadata.origin.orientation.z = origin_orientation.z();
+        costmap_msg.metadata.origin.orientation.w = origin_orientation.w();
         
         // Allocate data array
         costmap_msg.data.resize(width_cells * height_cells);
@@ -631,24 +680,33 @@ private:
         
         // Set header
         viz_msg.header.stamp = latest_pose_timestamp_;
-        viz_msg.header.frame_id = "rover";
+        viz_msg.header.frame_id = "map";
         
         // Set metadata
         viz_msg.info.width = width_cells;
         viz_msg.info.height = height_cells;
+        RCLCPP_INFO(this->get_logger(), "Costmap dimensions: width_cells=%u, height_cells=%u", width_cells, height_cells);
+        
         viz_msg.info.resolution = resolution_;
         viz_msg.info.map_load_time = latest_pose_timestamp_;
         
-        // Origin position in rover frame 2D
+        // Use the EXACT origin that was used for binning in createAveragedCostGrid
+        // origin_x and origin_y are already in global frame
         viz_msg.info.origin.position.x = origin_x;
         viz_msg.info.origin.position.y = origin_y;
         viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
         
-        // Keep initial orientation X foward, Y left, Z up
-        viz_msg.info.origin.orientation.x = 0;
+        // Set orientation: first apply 208° rotation, then cam_to_global_transform
+        tf2::Quaternion origin_orientation = cam_to_global_transform_.getRotation();
+        viz_msg.info.origin.orientation.x = origin_orientation.x();
         viz_msg.info.origin.orientation.y = 0;
         viz_msg.info.origin.orientation.z = 0;
-        viz_msg.info.origin.orientation.w = 1;
+        viz_msg.info.origin.orientation.w = origin_orientation.w();
+
+        // viz_msg.info.origin.orientation.x = 1;
+        // viz_msg.info.origin.orientation.y = 0;
+        // viz_msg.info.origin.orientation.z = 0;
+        // viz_msg.info.origin.orientation.w = 0;
         
         // Allocate data array
         viz_msg.data.resize(width_cells * height_cells);
@@ -686,7 +744,7 @@ private:
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr surface_normals_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
-
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     
     // Publishers
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_pub_;
@@ -695,11 +753,9 @@ private:
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
 
-    // Camera to rover transformation (tf2::Transform)
-    tf2::Transform cam_x_to_rover_transform_;
-
-    // Costmap metrics
-    costMapMetrics costmap_metrics_;
+    // Camera to global transformation (tf2::Transform)
+    tf2::Transform cam_to_global_transform_;
+    tf2::Transform cam_to_global_transform_x;
     
     // Latest pose timestamp for costmap synchronization
     rclcpp::Time latest_pose_timestamp_;

@@ -24,43 +24,8 @@ def generate_launch_description():
         ],
         output='screen'
     )
-
-    # 2. Test publisher sync data (no delay, WARN level)
-    test_publisher = Node(
-        package='sync_pkg',
-        executable='test_publisher_sync_data',
-        name='test_publisher_sync_data',
-        arguments=['--ros-args', '--log-level', 'WARN'],
-        output='screen'
-    )
-
-    # 3. Publisher all data (delayed 1 second, WARN level)
-    publisher_all = Node(
-        package='sync_pkg',
-        executable='publisher_all_data',
-        name='publisher_all_data',
-        arguments=['--ros-args', '--log-level', 'WARN'],
-        output='screen'
-    )
-    delayed_publisher_all = TimerAction(
-        period=1.0,
-        actions=[publisher_all]
-    )
-
-    # 4. Surface normal estimator (delayed 1 second, WARN level)
-    surface_normal = Node(
-        package='surface_normal_estimator',
-        executable='surface_normal_estimator',
-        name='surface_normal_estimator',
-        arguments=['--ros-args', '--log-level', 'WARN'],
-        output='screen'
-    )
-    delayed_surface_normal = TimerAction(
-        period=1.0,
-        actions=[surface_normal]
-    )
-
-    # 5. Costmap SNE (delayed 1 second, INFO level - keep all logs)
+    
+    # 5. Costmap SNE (delayed 1 second, with config file)
     costmap_sne = Node(
         package='cost_module',
         executable='costmap_sne',
@@ -68,15 +33,13 @@ def generate_launch_description():
         parameters=[config_file],
         output='screen'
     )
+    
     delayed_costmap_sne = TimerAction(
         period=1.0,
         actions=[costmap_sne]
     )
-
+    
     return LaunchDescription([
         static_tf,
-        test_publisher,
-        delayed_publisher_all,
-        delayed_surface_normal,
         delayed_costmap_sne
     ])
