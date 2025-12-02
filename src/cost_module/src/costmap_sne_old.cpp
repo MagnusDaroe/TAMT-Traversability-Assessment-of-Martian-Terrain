@@ -74,6 +74,8 @@ public:
             10
         );
 
+        costmap_metrics_ = getCostMapMetricsRoverFrame(getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_), cam_x_to_rover_transform_, camera_height_);
+        
         RCLCPP_INFO(this->get_logger(), "CostmapSNE node initialized");
     }
 
@@ -149,8 +151,13 @@ private:
         uint32_t width = msg->width;
         uint32_t height = msg->height;
 
+        std::vector<float> pointcloud = pointcloudToVector();
+
+        std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, width, height);
+        std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height);
+        
         // Combine pointcloud with normals
-        std::vector<float> points_with_normals = combinePointcloudWithNormals(normals_camera, width, height);
+        std::vector<float> points_with_normals = combinePointcloudWithNormals(pointcloud_rover, normals_rover, width, height);
 
         // Print x,y,z,nx,ny,nz for pixels at (36-38, 283)
         if (width > 38 && height > 283)
@@ -203,10 +210,90 @@ private:
 
         RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
     }
-    
-    // Combines pointcloud XYZ coordinates with their corresponding surface normals
-    // Returns a vector with format: [x, y, z, nx, ny, nz] for each point
-    std::vector<float> combinePointcloudWithNormals(const std::vector<float>& normals_camera,
+
+    costMapMetrics getCostMapMetricsRoverFrame(costMapMetrics metrics, tf2::Transform tf_camera_to_rover, double camera_height) {
+        // Unpack metrics in camera frame
+        tf2::Vector3 origin_camera_frame(metrics.origin[0], metrics.origin[1], camera_height);
+        
+        //Overwrite rotation in tf_camera_to_rover to be identity
+        tf2::Matrix3x3 rotation_identity;
+        rotation_identity.setIdentity();
+        tf2::Transform tf_camera_to_rover_identity(rotation_identity, tf_camera_to_rover.getOrigin());
+
+        // Apply transformation to rover frame
+        tf2::Vector3 origin_rover_frame = tf_camera_to_rover_identity * origin_camera_frame;
+
+        costMapMetrics rover_metrics;
+        rover_metrics.origin[0] = origin_rover_frame.x();
+        rover_metrics.origin[1] = origin_rover_frame.y();
+        rover_metrics.size[0] = metrics.size[0]; // Height remains the same
+        rover_metrics.size[1] = metrics.size[1]; // Width remains the same
+        
+        return rover_metrics;
+    }
+
+
+    std::vector<float> pointcloudToVector()
+    {
+        size_t num_points = sync_pointcloud_->width * sync_pointcloud_->height;
+        std::vector<float> points(num_points * 3); // 3 values per point: x, y, z
+        
+        // Parse pointcloud to get 3D coordinates for each point
+        const uint8_t* pc_data = sync_pointcloud_->data.data();
+        uint32_t point_step = sync_pointcloud_->point_step;
+        
+        // Iterate through each point
+        for (size_t i = 0; i < num_points; ++i)
+        {
+            // Get 3D coordinates from pointcloud (assuming XYZ fields at offset 0, 4, 8)
+            const float* point_ptr = reinterpret_cast<const float*>(pc_data + i * point_step);
+            float x = point_ptr[0];
+            float y = point_ptr[1];
+            float z = point_ptr[2];
+
+            // Store coordinates
+            points[i * 3 + 0] = x;
+            points[i * 3 + 1] = y;
+            points[i * 3 + 2] = z;
+        }
+
+        return points;
+    }
+
+
+    std::vector<float> transformToRoverFrame(const std::vector<float>& points, 
+                                              uint32_t width, uint32_t height)
+    {
+        size_t num_pixels = width * height;
+        std::vector<float> points_transformed(num_pixels * 3); // 3 values per point: x, y, z
+
+        // Transform each point to the rover frame
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            // Extract point coordinates in camera frame
+            float x_cam = points[i * 3 + 0];
+            float y_cam = points[i * 3 + 1];
+            float z_cam = points[i * 3 + 2];
+            
+            // Transform point to rover frame
+            tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
+            tf2::Vector3 point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
+            
+            // Transform normal vector to rover frame (rotation only, no translation)
+            tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
+            tf2::Vector3 normal_rover = cam_x_to_rover_transform_.inverse().getBasis() * normal_cam;
+            
+            // Store transformed data: [x, y, z, nx, ny, nz] in rover frame
+            points_transformed[i * 3 + 0] = point_rover.x();
+            points_transformed[i * 3 + 1] = point_rover.y();
+            points_transformed[i * 3 + 2] = point_rover.z();
+        }
+        
+        return points_transformed;
+    }
+
+
+    std::vector<float> combinePointcloudWithNormals(const std::vector<float>& pointcloud_rover, const std::vector<float>& normals_rover,
                                                      uint32_t width, uint32_t height)
     {
         // Ensure pointcloud size matches normals size
@@ -222,25 +309,19 @@ private:
         size_t num_pixels = width * height;
         std::vector<float> points_with_normals(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
         
-        // Parse pointcloud to get 3D coordinates for each pixel
-        const uint8_t* pc_data = sync_pointcloud_->data.data();
-        uint32_t point_step = sync_pointcloud_->point_step;
-        
         int points_beyond_max_distance = 0;
         
         // Iterate through each point
         for (size_t i = 0; i < num_pixels; ++i)
         {
-            // Get 3D coordinates from pointcloud (assuming XYZ fields at offset 0, 4, 8)
-            const float* point_ptr = reinterpret_cast<const float*>(pc_data + i * point_step);
-            float x = point_ptr[0];
-            float y = point_ptr[1];
-            float z = point_ptr[2];
+            float x = pointcloud_rover[i * 3 + 0];
+            float y = pointcloud_rover[i * 3 + 1];
+            float z = pointcloud_rover[i * 3 + 2];
             
-            // Get corresponding normal vector from normals_camera
-            float nx = normals_camera[i * 3 + 0];
-            float ny = normals_camera[i * 3 + 1];
-            float nz = normals_camera[i * 3 + 2];
+            // Get corresponding normal vector from normals_rover
+            float nx = normals_rover[i * 3 + 0];
+            float ny = normals_rover[i * 3 + 1];
+            float nz = normals_rover[i * 3 + 2];
             
             // Set normals to [0, 0, 0] if z (depth) exceeds max_distance
             if (z > max_distance_ || std::isnan(z) || std::isinf(z))
@@ -585,7 +666,6 @@ private:
 
         return std::make_tuple(std::move(avg), width_cells, height_cells, min_x, min_y);
     }
-
 
 
     void publishCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y)
