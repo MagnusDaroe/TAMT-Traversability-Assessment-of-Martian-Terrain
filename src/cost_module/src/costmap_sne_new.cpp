@@ -24,15 +24,6 @@ public:
         this->declare_parameter("camera.fov_x", 90.0);
         this->declare_parameter("camera.fov_y", 60.0);
         this->declare_parameter("camera.max_distance", 5.0);
-        
-        this->declare_parameter("camera.transform.translation.x", 0.0);
-        this->declare_parameter("camera.transform.translation.y", 0.0);
-        this->declare_parameter("camera.transform.translation.z", 0.0);
-        this->declare_parameter("camera.transform.rotation.x", 0.0);
-        this->declare_parameter("camera.transform.rotation.y", 0.0);
-        this->declare_parameter("camera.transform.rotation.z", 0.0);
-        this->declare_parameter("camera.transform.rotation.w", 1.0);
-        
         this->declare_parameter("rover.width", 1.0);
         this->declare_parameter("rover.length", 1.5);
         this->declare_parameter("costmap.resolution", 0.05);
@@ -43,33 +34,10 @@ public:
         fov_x_ = this->get_parameter("camera.fov_x").as_double();
         fov_y_ = this->get_parameter("camera.fov_y").as_double();
         max_distance_ = this->get_parameter("camera.max_distance").as_double();
-
-        // Unpack static transform from rover frame to camera frame (when horizontal)
-        tf2::Quaternion q_cam_to_rover_horizontal(
-            this->get_parameter("camera.transform.rotation.x").as_double(), 
-            this->get_parameter("camera.transform.rotation.y").as_double(),
-            this->get_parameter("camera.transform.rotation.z").as_double(),
-            this->get_parameter("camera.transform.rotation.w").as_double()
-        );
-
-        // Apply tilt rotation around the rover Y-axis
-        tf2::Quaternion q_tilt;
-        q_tilt.setRPY(0, tilt_angle_ * M_PI / 180.0, 0);  // Rotation around Y-axis
-
-        // Combine: tilt is applied in rover frame, so multiply in this order
-        tf2::Quaternion q_cam_to_rover = q_tilt * q_cam_to_rover_horizontal;
-
-        // Set the complete transform
-        cam_x_to_rover_transform_.setRotation(q_cam_to_rover);
-        cam_x_to_rover_transform_.setOrigin(tf2::Vector3(
-            this->get_parameter("camera.transform.translation.x").as_double(),
-            this->get_parameter("camera.transform.translation.y").as_double(),
-            this->get_parameter("camera.transform.translation.z").as_double()
-        ));
         rover_width_ = this->get_parameter("rover.width").as_double();
         rover_length_ = this->get_parameter("rover.length").as_double();
         resolution_ = this->get_parameter("costmap.resolution").as_double();
-
+        
         RCLCPP_INFO(this->get_logger(), "Loaded camera parameters - FOV X: %.1f°, FOV Y: %.1f°, Max distance: %.2fm",
                     fov_x_, fov_y_, max_distance_);
         RCLCPP_INFO(this->get_logger(), "Loaded rover parameters - Width: %.2fm, Length: %.2fm",
@@ -103,8 +71,15 @@ public:
             10
         );
         
+        tf2::Quaternion q_cam_x_to_rover;
+        q_cam_x_to_rover.setRPY((90.0 - tilt_angle_) * M_PI / 180.0, 0, -M_PI / 2);
+        RCLCPP_INFO(this->get_logger(), "q_cam_x_to_rover: x=%.6f, y=%.6f, z=%.6f, w=%.6f",
+                    q_cam_x_to_rover.x(), q_cam_x_to_rover.y(), q_cam_x_to_rover.z(), q_cam_x_to_rover.w());
+        cam_x_to_rover_transform_.setRotation(q_cam_x_to_rover);
+        cam_x_to_rover_transform_.setOrigin(tf2::Vector3(0.157499, 0.059899, 0.238857));
+
         costmap_metrics_ = getCostMapMetricsRoverFrame(getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_), cam_x_to_rover_transform_, camera_height_);
-                
+        
         RCLCPP_INFO(this->get_logger(), "CostmapSNE node initialized");
     }
 
@@ -151,10 +126,10 @@ private:
         std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, width, height);
         std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height);
         
-
+        
         // Combine pointcloud with normals
         std::vector<float> points_with_normals = combinePointcloudWithNormals(pointcloud_rover, normals_rover, width, height);
-        
+
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
         std::vector<float> points_with_theta_rover = computePolarAngles(points_with_normals_rover, width, height);
@@ -235,7 +210,7 @@ private:
 
         return metrics;
     }
-    
+
     costMapMetrics getCostMapMetricsRoverFrame(costMapMetrics metrics, tf2::Transform tf_camera_to_rover, double camera_height) {
         // Unpack metrics in camera frame
         tf2::Vector3 origin_camera_frame(metrics.origin[0], metrics.origin[1], camera_height);
