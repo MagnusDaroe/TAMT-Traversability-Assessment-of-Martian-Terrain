@@ -70,22 +70,27 @@ public:
             "/costmap_sne_viz",
             10
         );
-
-        // Initialize camera to rover transformations
-        tf2::Quaternion q_cam_to_rover;
-        q_cam_to_rover.setRPY(90.0 * M_PI / 180.0, 0, -M_PI / 2);
-        cam_to_rover_transform_.setRotation(q_cam_to_rover);
-        cam_to_rover_transform_.setOrigin(tf2::Vector3(0.157499, 0.059899, 0.238857));
         
         tf2::Quaternion q_cam_x_to_rover;
         q_cam_x_to_rover.setRPY((90.0 - tilt_angle_) * M_PI / 180.0, 0, -M_PI / 2);
+        RCLCPP_INFO(this->get_logger(), "q_cam_x_to_rover: x=%.6f, y=%.6f, z=%.6f, w=%.6f",
+                    q_cam_x_to_rover.x(), q_cam_x_to_rover.y(), q_cam_x_to_rover.z(), q_cam_x_to_rover.w());
         cam_x_to_rover_transform_.setRotation(q_cam_x_to_rover);
         cam_x_to_rover_transform_.setOrigin(tf2::Vector3(0.157499, 0.059899, 0.238857));
+
+        costmap_metrics_ = getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_);
         
         RCLCPP_INFO(this->get_logger(), "CostmapSNE node initialized");
     }
 
 private:
+
+    struct costMapMetrics 
+    {
+    double origin[2] = {0.0, 0.0}; // origin[0]: x coordinate of closest left point, origin[1]: y coordinate of closest left point
+    double size[2] = {0.0, 0.0}; // size[0]: Height of the map, size[1]: Width of the map
+    };
+
     void pointcloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
         // Store the latest pointcloud
@@ -161,14 +166,78 @@ private:
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_rover, width, height);
 
+
         // Create averaged cost grid
-        auto [averaged_grid, width_cells, height_cells, origin_x_cam, origin_y_cam] = createAveragedCostGrid(traversability_costs);
+        auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(traversability_costs, costmap_metrics_);
         RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
 
         // Publish costmap with the actual origin used for binning
-        publishCostmap(averaged_grid, width_cells, height_cells, origin_x_cam, origin_y_cam);
+        publishCostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y);
 
-        RCLCPP_INFO(this->get_logger(), "Processed surface normals image: %dx%d", width, height);
+        RCLCPP_INFO(this->get_logger(), "Computed and published topography costmap");
+    }
+    
+    costMapMetrics getCostMapMetrics(double fov_horizontal, double fov_vertical, double camera_height, double camera_pitch, double max_ray_length) {
+        // Handle when camera is below ground level, handle when max_ray_length is less than camera height
+        if (camera_height < 0.0 || max_ray_length <= camera_height) {
+            throw std::invalid_argument("Camera height must be non-negative and less than max ray length.");
+        }
+        else if (fov_horizontal <= 0.0 || fov_vertical <= 0.0) {
+            throw std::invalid_argument("Field of view angles must be positive.");
+        }
+        else if (fov_horizontal >= 180.0 || fov_vertical >= 180.0) {
+            throw std::invalid_argument("Field of view angles must be less than 180 degrees.");
+        }
+        else if (max_ray_length <= 0.0) {
+            throw std::invalid_argument("Max ray length must be positive.");
+        }
+        else if (camera_pitch < 0 || camera_pitch > 90.0) {
+            throw std::invalid_argument("Camera pitch must be between 0 and 90 degrees.");
+        }
+
+        // Initialize the costMapMetrics structure to hold the results
+        costMapMetrics metrics;
+
+        // Calculate the half angle of the horizontal field of view in radians
+        double theta_horizontal = (fov_horizontal / 2.0) * M_PI / 180.0;
+
+        // Ray angles:
+        double top_ray_angle = (90.0 + (fov_vertical / 2.0) - camera_pitch);
+        double bottom_ray_angle = (90.0 - (fov_vertical / 2.0) - camera_pitch);
+
+        // Calculate min and max distances in the x direction. Min is the closest point the camera can see on the ground
+        double min_dist_x = std::max(0.0, std::tan(bottom_ray_angle * M_PI / 180.0) * camera_height);
+        
+        // Check if the top ray goes beyond vertical
+        double max_dist_x = 1.0;
+        double ray_limit = std::sqrt(max_ray_length * max_ray_length - camera_height * camera_height);
+        const double EPSILON = 1e-6; // Small tolerance for floating point comparison
+        
+        if (top_ray_angle >= 90.0 - EPSILON) {
+            max_dist_x = ray_limit; // Ray goes beyond vertical - limit by max ray length
+        } else { 
+            // Ray hits ground - calculate both limits
+            double ground_intersection = std::tan(top_ray_angle * M_PI / 180.0) * camera_height;  
+            max_dist_x = std::min(ray_limit, ground_intersection);
+        }
+        
+        // Calculate the y distance based on the max ray length and the horizontal field of view
+        double y_ray_restricted = std::tan(theta_horizontal) * std::cos(theta_horizontal) * max_ray_length;
+        double y_max_dist_x = std::tan(theta_horizontal) * std::sqrt(max_dist_x*max_dist_x + camera_height*camera_height);
+        double y = std::min(y_ray_restricted, y_max_dist_x);
+        
+        // Calculate size of the map
+        double height = max_dist_x - min_dist_x;
+        double width = 2.0 * y;
+
+        // Populate the metrics structure
+        metrics.origin[0] = min_dist_x;
+        metrics.origin[1] = y;
+
+        metrics.size[0] = height;
+        metrics.size[1] = width;
+
+        return metrics;
     }
     
     // Combines pointcloud XYZ coordinates with their corresponding surface normals
@@ -426,20 +495,18 @@ private:
         return points_with_costs;
     }
 
-    // Create an averaged cost grid from per-point costs.
-    // Input: points_with_costs - vector with [x,y,z,cost] per point
-    // Output: tuple(grid, width_cells, height_cells, origin_x, origin_y)
-    // - grid: vector<float> of size width_cells*height_cells where each element is the
-    //         average cost of points falling into that cell (NaN if no points)
-    // - width_cells/height_cells: dimensions of the grid
-    // - origin_x/origin_y: coordinates of the first cell (0,0) in camera frame
-    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs)
+    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs, const costMapMetrics& costmap_metrics_)
     {
+        double origin_x = costmap_metrics_.origin[0];
+        double origin_y = costmap_metrics_.origin[1];
+        double costmap_height = costmap_metrics_.size[0];
+        double costmap_width = costmap_metrics_.size[1];
 
-        //! Insert Magnus function here to get:
-        //! - Input: fov_x (degree), fov_y (degree), camera_height_ (m), tilt_angle_ (degree), max_distance_ (m)
-        //! - Output: origin[x,y] and size[height,width] of the costmap in rover frame in meters
-        
+        // Convert to number of cells (round up)
+        uint32_t width_cells = static_cast<uint32_t>(std::ceil(costmap_width / resolution_));
+        uint32_t height_cells = static_cast<uint32_t>(std::ceil(costmap_height / resolution_));
+
+        size_t num_cells = static_cast<size_t>(width_cells) * static_cast<size_t>(height_cells);
 
         // Accumulators for sum and count per cell
         std::vector<double> sum(num_cells, 0.0);
@@ -462,8 +529,8 @@ private:
                 continue; // skip invalid
             }
 
-            int ix = static_cast<int>(std::floor((x - min_x) / resolution_));
-            int iy = static_cast<int>(std::floor((y - min_y) / resolution_));
+            int ix = static_cast<int>(std::floor((x - origin_x) / resolution_));
+            int iy = static_cast<int>(std::floor((y - origin_y) / resolution_));
 
             if (ix < 0 || iy < 0) {
                 points_out_of_bounds++;
@@ -494,7 +561,7 @@ private:
             // otherwise leave as 255
         }
 
-        return std::make_tuple(std::move(avg), width_cells, height_cells, min_x, min_y);
+        return std::make_tuple(std::move(avg), width_cells, height_cells, origin_x, origin_y);
     }
 
 
@@ -506,50 +573,23 @@ private:
         
         // Set header
         costmap_msg.header.stamp = latest_pose_timestamp_;
-        costmap_msg.header.frame_id = "map"; // or use your global frame
+        costmap_msg.header.frame_id = "rover"; 
         
         // Set metadata
         costmap_msg.metadata.size_x = width_cells;
         costmap_msg.metadata.size_y = height_cells;
         costmap_msg.metadata.resolution = resolution_;
         
-        // Apply 208 degree rotation around x-axis, then transform to global frame
-        tf2::Quaternion rotation_x;
-        rotation_x.setRPY(180.0 * M_PI / 180.0, 0, 0); // 208 degrees around x-axis
-        tf2::Transform rotation_transform;
-        rotation_transform.setOrigin(tf2::Vector3(0, 0, 0));
-        rotation_transform.setRotation(rotation_x);
-        
-        // Calculate origin in camera frame based on FOV
-        double fov_x_rad = fov_x_ * M_PI / 180.0;
-        //double fov_y_rad = fov_y_ * M_PI / 180.0;
-        float origin_x_camera = -cos((M_PI-fov_x_rad)/2)*max_distance_; 
-        float origin_y_camera = 0.0f;
-        float origin_z_camera = 0.0f; 
-        
-        // Transform origin: first apply 208° rotation, then cam_x_to_rover_transform_
-        tf2::Vector3 origin_cam(origin_x_camera, origin_y_camera, origin_z_camera);
-        RCLCPP_INFO(this->get_logger(), "Origin in camera frame: [%.6f, %.6f, %.6f]", 
-                    origin_cam.x(), origin_cam.y(), origin_cam.z());
-        tf2::Vector3 origin_rotated = rotation_transform * origin_cam;
-        RCLCPP_INFO(this->get_logger(), "Origin after 180° rotation: [%.6f, %.6f, %.6f]", 
-                    origin_rotated.x(), origin_rotated.y(), origin_rotated.z());
-        
-        tf2::Vector3 origin_global = cam_x_to_rover_transform_ * origin_rotated;
-        RCLCPP_INFO(this->get_logger(), "Origin in global frame: [%.6f, %.6f, %.6f]", 
-                    origin_global.x(), origin_global.y(), origin_global.z());
-        
         // Set origin (position of cell (0,0) in the map frame)
-        costmap_msg.metadata.origin.position.x = origin_global.x();
-        costmap_msg.metadata.origin.position.y = origin_global.y();
-        costmap_msg.metadata.origin.position.z = origin_global.z();
+        costmap_msg.metadata.origin.position.x = origin_x;
+        costmap_msg.metadata.origin.position.y = origin_y;
+        costmap_msg.metadata.origin.position.z = 0;
         
-        // Set orientation: first apply 208° rotation, then cam_x_to_rover_transform_
-        tf2::Quaternion origin_orientation = cam_x_to_rover_transform_.getRotation() * rotation_x;
-        costmap_msg.metadata.origin.orientation.x = origin_orientation.x();
-        costmap_msg.metadata.origin.orientation.y = origin_orientation.y();
-        costmap_msg.metadata.origin.orientation.z = origin_orientation.z();
-        costmap_msg.metadata.origin.orientation.w = origin_orientation.w();
+        // Keep initial orientation X foward, Y left, Z up
+        costmap_msg.metadata.origin.orientation.x = 0;
+        costmap_msg.metadata.origin.orientation.y = 0;
+        costmap_msg.metadata.origin.orientation.z = 0;
+        costmap_msg.metadata.origin.orientation.w = 1;
         
         // Allocate data array
         costmap_msg.data.resize(width_cells * height_cells);
@@ -591,33 +631,24 @@ private:
         
         // Set header
         viz_msg.header.stamp = latest_pose_timestamp_;
-        viz_msg.header.frame_id = "map";
+        viz_msg.header.frame_id = "rover";
         
         // Set metadata
         viz_msg.info.width = width_cells;
         viz_msg.info.height = height_cells;
-        RCLCPP_INFO(this->get_logger(), "Costmap dimensions: width_cells=%u, height_cells=%u", width_cells, height_cells);
-        
         viz_msg.info.resolution = resolution_;
         viz_msg.info.map_load_time = latest_pose_timestamp_;
         
-        // Use the EXACT origin that was used for binning in createAveragedCostGrid
-        // origin_x and origin_y are already in global frame
+        // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
         viz_msg.info.origin.position.y = origin_y;
         viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
         
-        // Set orientation: first apply 208° rotation, then cam_to_global_transform
-        tf2::Quaternion origin_orientation = cam_to_rover_transform_.getRotation();
-        viz_msg.info.origin.orientation.x = origin_orientation.x();
+        // Keep initial orientation X foward, Y left, Z up
+        viz_msg.info.origin.orientation.x = 0;
         viz_msg.info.origin.orientation.y = 0;
         viz_msg.info.origin.orientation.z = 0;
-        viz_msg.info.origin.orientation.w = origin_orientation.w();
-
-        // viz_msg.info.origin.orientation.x = 1;
-        // viz_msg.info.origin.orientation.y = 0;
-        // viz_msg.info.origin.orientation.z = 0;
-        // viz_msg.info.origin.orientation.w = 0;
+        viz_msg.info.origin.orientation.w = 1;
         
         // Allocate data array
         viz_msg.data.resize(width_cells * height_cells);
@@ -664,9 +695,11 @@ private:
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
 
-    // Camera to global transformation (tf2::Transform)
-    tf2::Transform cam_to_rover_transform_;
+    // Camera to rover transformation (tf2::Transform)
     tf2::Transform cam_x_to_rover_transform_;
+
+    // Costmap metrics
+    costMapMetrics costmap_metrics_;
     
     // Latest pose timestamp for costmap synchronization
     rclcpp::Time latest_pose_timestamp_;
