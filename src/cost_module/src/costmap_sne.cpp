@@ -279,7 +279,7 @@ private:
             // Store coordinates
             points[i * 3 + 0] = x;
             points[i * 3 + 1] = y;
-            points[i * 3 + 2] = z;
+            points[i * 3 + 2] = -z; //! Invert z because stupid isaac frame
         }
 
         return points;
@@ -304,18 +304,29 @@ private:
             tf2::Vector3 point_rover;
             if (normals) {
                 // Transform normal vector to rover frame (rotation only, no translation)
-                point_rover = cam_x_to_rover_transform_.inverse().getBasis() * point_cam;
+                point_rover = cam_x_to_rover_transform_.getBasis() * point_cam;
             }
             else {
                 // Transform point to rover frame
-                point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
+                point_rover = cam_x_to_rover_transform_ * point_cam;
             }
                     
-            // Store transformed data: [x, y, z, nx, ny, nz] in rover frame
+            size_t u = i % width;
+            size_t v = i / width;
+
+            // Store transformed data: [x, y, z] in rover frame
             points_transformed[i * 3 + 0] = point_rover.x();
             points_transformed[i * 3 + 1] = point_rover.y();
             points_transformed[i * 3 + 2] = point_rover.z();
+
+            if (u == 320 && v  == 240) {
+                RCLCPP_INFO(this->get_logger(), "Transformed point[%zu]: x=%.3f y=%.3f z=%.3f", 
+                            i, point_rover.x(), point_rover.y(), point_rover.z());
+                RCLCPP_INFO(this->get_logger(), "Original point[%zu]: x=%.3f y=%.3f z=%.3f", 
+                            i, x_cam,  y_cam, z_cam);
+            }
         }
+
         
         return points_transformed;
     }
@@ -525,11 +536,19 @@ private:
             int ix = static_cast<int>(std::floor((x - origin_x) / resolution_));
             int iy = static_cast<int>(std::floor((y - origin_y) / resolution_));
 
-            if (ix < 0 || iy < 0) {
+            size_t u = i % 640;  // Column (x coordinate in image)
+            size_t v = i / 640;  // Row (y coordinate in image)
+
+            if (u == 320 && v == 240) {
+                RCLCPP_INFO(this->get_logger(), 
+                        "Ix, Iy: (%d, %d)", ix, iy);
+            }
+
+            if (ix < 0 || iy > 0) {
                 points_out_of_bounds++;
                 continue;
             }
-            if (static_cast<uint32_t>(ix) >= width_cells || static_cast<uint32_t>(iy) >= height_cells) {
+            if (static_cast<uint32_t>(ix) >= height_cells || static_cast<uint32_t>(iy) <= width_cells) {
                 points_out_of_bounds++;
                 continue;
             }
@@ -565,11 +584,11 @@ private:
         
         // Set header
         costmap_msg.header.stamp = latest_pose_timestamp_;
-        costmap_msg.header.frame_id = "rover"; 
+        costmap_msg.header.frame_id = "map"; 
         
         // Set metadata
-        costmap_msg.metadata.size_x = width_cells;
-        costmap_msg.metadata.size_y = height_cells;
+        costmap_msg.metadata.size_x = height_cells;
+        costmap_msg.metadata.size_y = width_cells;
         costmap_msg.metadata.resolution = resolution_;
         
         // Set origin (position of cell (0,0) in the map frame)
@@ -623,17 +642,17 @@ private:
         
         // Set header
         viz_msg.header.stamp = latest_pose_timestamp_;
-        viz_msg.header.frame_id = "rover";
+        viz_msg.header.frame_id = "map";
         
         // Set metadata
-        viz_msg.info.width = width_cells;
-        viz_msg.info.height = height_cells;
+        viz_msg.info.width = height_cells;
+        viz_msg.info.height = width_cells;
         viz_msg.info.resolution = resolution_;
         viz_msg.info.map_load_time = latest_pose_timestamp_;
         
         // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
-        viz_msg.info.origin.position.y = origin_y;
+        viz_msg.info.origin.position.y = -origin_y;
         viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
         
         // Keep initial orientation X foward, Y left, Z up
