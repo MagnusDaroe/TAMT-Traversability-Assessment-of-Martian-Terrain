@@ -153,7 +153,7 @@ private:
         
 
         // Combine pointcloud with normals
-        std::vector<float> points_with_normals = combinePointcloudWithNormals(pointcloud_rover, normals_rover, width, height);
+        std::vector<float> points_with_normals_rover = combinePointcloudWithNormals(pointcloud_rover, normals_rover, width, height);
         
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
