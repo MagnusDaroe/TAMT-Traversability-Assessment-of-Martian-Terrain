@@ -148,8 +148,8 @@ private:
 
         std::vector<float> pointcloud = pointcloudToVector();
 
-        std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, width, height);
-        std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height);
+        std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, width, height, false);
+        std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height, true);
         
 
         // Combine pointcloud with normals
@@ -287,7 +287,7 @@ private:
 
 
     std::vector<float> transformToRoverFrame(const std::vector<float>& points, 
-                                              uint32_t width, uint32_t height)
+                                              uint32_t width, uint32_t height, bool normals)
     {
         size_t num_pixels = width * height;
         std::vector<float> points_transformed(num_pixels * 3); // 3 values per point: x, y, z
@@ -300,14 +300,17 @@ private:
             float y_cam = points[i * 3 + 1];
             float z_cam = points[i * 3 + 2];
             
-            // Transform point to rover frame
-            tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
-            tf2::Vector3 point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
-            
-            // Transform normal vector to rover frame (rotation only, no translation)
-            tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
-            tf2::Vector3 normal_rover = cam_x_to_rover_transform_.inverse().getBasis() * normal_cam;
-            
+            if (normals) {
+                // Transform normal vector to rover frame (rotation only, no translation)
+                tf2::Vector3 normal_cam(nx_cam, ny_cam, nz_cam);
+                tf2::Vector3 normal_rover = cam_x_to_rover_transform_.inverse().getBasis() * normal_cam;
+            }
+            else {
+                // Transform point to rover frame
+                tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
+                tf2::Vector3 point_rover = cam_x_to_rover_transform_.inverse() * point_cam;
+            }
+                    
             // Store transformed data: [x, y, z, nx, ny, nz] in rover frame
             points_transformed[i * 3 + 0] = point_rover.x();
             points_transformed[i * 3 + 1] = point_rover.y();
