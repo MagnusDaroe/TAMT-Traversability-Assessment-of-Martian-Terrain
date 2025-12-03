@@ -534,7 +534,7 @@ private:
             }
 
             int ix = static_cast<int>(std::floor((x - origin_x) / resolution_));
-            int iy = static_cast<int>(std::floor((y - origin_y) / resolution_));
+            int iy = static_cast<int>(std::floor(-(y - origin_y) / resolution_));
 
             size_t u = i % 640;  // Column (x coordinate in image)
             size_t v = i / 640;  // Row (y coordinate in image)
@@ -544,16 +544,16 @@ private:
                         "Ix, Iy: (%d, %d)", ix, iy);
             }
 
-            if (ix < 0 || iy > 0) {
+            if (ix < 0 || iy < 0) {
                 points_out_of_bounds++;
                 continue;
             }
-            if (static_cast<uint32_t>(ix) >= height_cells || static_cast<uint32_t>(iy) <= width_cells) {
+            if (static_cast<uint32_t>(ix) >= height_cells || static_cast<uint32_t>(iy) >= width_cells) {
                 points_out_of_bounds++;
                 continue;
             }
 
-            size_t cell_idx = static_cast<size_t>(iy) * static_cast<size_t>(width_cells) + static_cast<size_t>(ix);
+            size_t cell_idx = static_cast<size_t>(ix) * static_cast<size_t>(width_cells) + static_cast<size_t>(iy);
             sum[cell_idx] += static_cast<double>(cost);
             count[cell_idx] += 1;
             points_binned++;
