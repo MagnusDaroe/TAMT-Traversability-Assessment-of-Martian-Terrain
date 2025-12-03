@@ -21,8 +21,8 @@ public:
         // Declare parameters with default values (can be overridden by YAML file)
         this->declare_parameter("camera.height", 1.0);
         this->declare_parameter("camera.tilt_angle", 20.0);
-        this->declare_parameter("camera.fov_x", 90.0);
-        this->declare_parameter("camera.fov_y", 60.0);
+        this->declare_parameter("camera.fov_x", 110.0);
+        this->declare_parameter("camera.fov_y", 70.0);
         this->declare_parameter("camera.max_distance", 5.0);
         
         this->declare_parameter("camera.transform.translation.x", 0.0);
