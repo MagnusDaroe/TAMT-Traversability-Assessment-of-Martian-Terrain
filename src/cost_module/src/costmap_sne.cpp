@@ -522,8 +522,9 @@ private:
         size_t num_pixels = width * height;
         std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
         
-        // Cost function: C = 25.73 * theta²
-        const float cost_coefficient = 25.73f;
+        // Cost function: C = -13.857 * exp(theta) + 320.68
+        const float exponential_coefficient = 13.857f;
+        const float added_coefficient = 320.68f;
         
         // Compute cost for each point
         for (size_t i = 0; i < num_pixels; ++i)
@@ -543,8 +544,8 @@ private:
             }
             else
             {
-                // Compute cost: C = -25.73 * theta² + 254 (theta in radians)
-                cost = (-cost_coefficient * theta * theta) + 254.0f;
+                // Compute cost: C = -13.857 * exp(theta) + 320.68 (theta in radians)
+                cost = -exponential_coefficient * std::exp(theta) + added_coefficient;
             }
             
             // Store combined data: [x, y, z, cost] in rover frame
