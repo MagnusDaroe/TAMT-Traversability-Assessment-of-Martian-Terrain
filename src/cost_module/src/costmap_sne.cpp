@@ -102,6 +102,12 @@ public:
             "/costmap_sne_viz",
             10
         );
+
+        // Create publisher for per-pixel costs
+        cost_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+            "/costmap_sne/cost_image",
+            10
+        );
         
         costmap_metrics_ = getCostMapMetricsRoverFrame(getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_), cam_x_to_rover_transform_, camera_height_);
                 
@@ -146,6 +152,22 @@ private:
         uint32_t width = msg->width;
         uint32_t height = msg->height;
 
+        // Print normals for pixels at row 283, columns 36-38 (camera frame)
+        if (width > 38 && height > 283)
+        {
+            RCLCPP_INFO(this->get_logger(), "Normals (camera frame) for pixels at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                float nx = normals_camera[idx * 3 + 0];
+                float ny = normals_camera[idx * 3 + 1];
+                float nz = normals_camera[idx * 3 + 2];
+                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): nx=%.6f ny=%.6f nz=%.6f", 
+                           idx, u, v, nx, ny, nz);
+            }
+        }
+
         std::vector<float> pointcloud = pointcloudToVector();
 
         std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, width, height, false);
@@ -162,7 +184,7 @@ private:
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeTraversabilityCost(points_with_theta_rover, width, height);
 
-
+        publishCosts(traversability_costs);
         // Create averaged cost grid
         auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(traversability_costs, costmap_metrics_);
         RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
@@ -171,6 +193,44 @@ private:
         publishCostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y);
 
         RCLCPP_INFO(this->get_logger(), "Computed and published topography costmap");
+    }
+
+    void publishCosts(const std::vector<float>& traversability_costs)
+    {
+        // traversability_costs format: [x, y, z, cost] for each point
+        // We need to reconstruct the image with costs in their original pixel positions
+        
+        size_t num_points = traversability_costs.size() / 4;
+        
+        // Assume standard camera resolution (you may want to pass width/height as parameters)
+        uint32_t width = sync_pointcloud_->width;
+        uint32_t height = sync_pointcloud_->height;
+        
+        // Create image message
+        auto cost_image_msg = sensor_msgs::msg::Image();
+        cost_image_msg.header.stamp = this->now();
+        cost_image_msg.header.frame_id = "camera_frame";
+        cost_image_msg.height = height;
+        cost_image_msg.width = width;
+        cost_image_msg.encoding = "32FC1";  // Single channel 32-bit float
+        cost_image_msg.is_bigendian = false;
+        cost_image_msg.step = width * sizeof(float);
+        
+        // Allocate data
+        cost_image_msg.data.resize(width * height * sizeof(float));
+        float* cost_data = reinterpret_cast<float*>(cost_image_msg.data.data());
+        
+        // Fill the image with cost values
+        for (size_t i = 0; i < num_points; ++i)
+        {
+            float cost = traversability_costs[i * 4 + 3];  // Extract cost from [x, y, z, cost]
+            cost_data[i] = cost;
+        }
+        
+        // Publish the cost image
+        cost_image_pub_->publish(cost_image_msg);
+        
+        RCLCPP_DEBUG(this->get_logger(), "Published cost image with %dx%d pixels", width, height);
     }
     
     costMapMetrics getCostMapMetrics(double fov_horizontal, double fov_vertical, double camera_height, double camera_pitch, double max_ray_length) {
@@ -310,23 +370,38 @@ private:
                 // Transform point to rover frame
                 point_rover = cam_x_to_rover_transform_ * point_cam;
             }
-                    
-            size_t u = i % width;
-            size_t v = i / width;
 
             // Store transformed data: [x, y, z] in rover frame
             points_transformed[i * 3 + 0] = point_rover.x();
             points_transformed[i * 3 + 1] = point_rover.y();
             points_transformed[i * 3 + 2] = point_rover.z();
-
-            if (u == 320 && v  == 240) {
-                RCLCPP_INFO(this->get_logger(), "Transformed point[%zu]: x=%.3f y=%.3f z=%.3f", 
-                            i, point_rover.x(), point_rover.y(), point_rover.z());
-                RCLCPP_INFO(this->get_logger(), "Original point[%zu]: x=%.3f y=%.3f z=%.3f", 
-                            i, x_cam,  y_cam, z_cam);
-            }
         }
 
+        // Print transformed pixels at row 283, columns 36-38
+        if (width > 38 && height > 283)
+        {
+            std::string frame_type = normals ? "Normals" : "Points";
+            RCLCPP_INFO(this->get_logger(), "%s transformation for pixels at row 283, columns 36-38:", frame_type.c_str());
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                
+                // Before transformation (camera frame)
+                float x_cam = points[idx * 3 + 0];
+                float y_cam = points[idx * 3 + 1];
+                float z_cam = points[idx * 3 + 2];
+                
+                // After transformation (rover frame)
+                float x_rov = points_transformed[idx * 3 + 0];
+                float y_rov = points_transformed[idx * 3 + 1];
+                float z_rov = points_transformed[idx * 3 + 2];
+                
+                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu):", idx, u, v);
+                RCLCPP_INFO(this->get_logger(), "    Camera frame: x=%.6f y=%.6f z=%.6f", x_cam, y_cam, z_cam);
+                RCLCPP_INFO(this->get_logger(), "    Rover frame:  x=%.6f y=%.6f z=%.6f", x_rov, y_rov, z_rov);
+            }
+        }
         
         return points_transformed;
     }
@@ -447,8 +522,8 @@ private:
         size_t num_pixels = width * height;
         std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
         
-        // Cost function: C = 102.54 * theta²
-        const float cost_coefficient = 102.54f;
+        // Cost function: C = 25.73 * theta²
+        const float cost_coefficient = 25.73f;
         
         // Compute cost for each point
         for (size_t i = 0; i < num_pixels; ++i)
@@ -468,8 +543,8 @@ private:
             }
             else
             {
-                // Compute cost: C = 102.54 * theta² (theta in radians)
-                cost = cost_coefficient * theta * theta;
+                // Compute cost: C = -25.73 * theta² + 254 (theta in radians)
+                cost = (-cost_coefficient * theta * theta) + 254.0f;
             }
             
             // Store combined data: [x, y, z, cost] in rover frame
@@ -569,9 +644,11 @@ private:
             if (count[ci] > 0)
             {
                 avg[ci] = static_cast<float>(sum[ci] / static_cast<double>(count[ci]));
+                //RCLCPP_INFO(this->get_logger(), "Averaged cost cell: %.2f", avg[ci]);
             }
             // otherwise leave as 255
         }
+        
 
         return std::make_tuple(std::move(avg), width_cells, height_cells, origin_x, origin_y);
     }
@@ -599,8 +676,8 @@ private:
         // Keep initial orientation X foward, Y left, Z up
         costmap_msg.metadata.origin.orientation.x = 0;
         costmap_msg.metadata.origin.orientation.y = 0;
-        costmap_msg.metadata.origin.orientation.z = 0;
-        costmap_msg.metadata.origin.orientation.w = 1;
+        costmap_msg.metadata.origin.orientation.z = -0.7071068;
+        costmap_msg.metadata.origin.orientation.w = 0.7071068;
         
         // Allocate data array
         costmap_msg.data.resize(width_cells * height_cells);
@@ -645,21 +722,21 @@ private:
         viz_msg.header.frame_id = "map";
         
         // Set metadata
-        viz_msg.info.width = height_cells;
-        viz_msg.info.height = width_cells;
+        viz_msg.info.width = width_cells;
+        viz_msg.info.height = height_cells;
         viz_msg.info.resolution = resolution_;
         viz_msg.info.map_load_time = latest_pose_timestamp_;
         
         // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
-        viz_msg.info.origin.position.y = -origin_y;
+        viz_msg.info.origin.position.y = origin_y;
         viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
         
-        // Keep initial orientation X foward, Y left, Z up
+        // -90 degrees around Z axis
         viz_msg.info.origin.orientation.x = 0;
         viz_msg.info.origin.orientation.y = 0;
-        viz_msg.info.origin.orientation.z = 0;
-        viz_msg.info.origin.orientation.w = 1;
+        viz_msg.info.origin.orientation.z = -0.7071068;
+        viz_msg.info.origin.orientation.w = 0.7071068; 
         
         // Allocate data array
         viz_msg.data.resize(width_cells * height_cells);
@@ -702,6 +779,7 @@ private:
     // Publishers
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_viz_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr cost_image_pub_;
     
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
