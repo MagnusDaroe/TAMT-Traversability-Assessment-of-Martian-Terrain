@@ -37,8 +37,8 @@ def generate_launch_description():
     # 3. Publisher all data (delayed 1 second, WARN level)
     publisher_all = Node(
         package='sync_pkg',
-        executable='publisher_all_data',
-        name='publisher_all_data',
+        executable='publish_raw_data',
+        name='raw_data_publisher',
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )

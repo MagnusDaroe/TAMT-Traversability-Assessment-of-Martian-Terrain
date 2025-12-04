@@ -4,8 +4,6 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2/LinearMath/Transform.h>
-#include <cv_bridge/cv_bridge.hpp>
-#include <opencv2/opencv.hpp>
 #include <nav2_msgs/msg/costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <tuple>
@@ -235,8 +233,7 @@ private:
         std::vector<float> points_with_costs = computeSegmentationTraversabilityCost(points_with_segmentation, segmentation_width_, segmentation_height_);
         
         // Create averaged cost grid
-        auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = 
-            createAveragedCostGrid(points_with_costs);
+        auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(points_with_costs, costmap_metrics_);
         RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
         
         // Publish costmap
@@ -540,10 +537,6 @@ private:
         size_t num_pixels = width * height;
         std::vector<float> points_with_segmentation(num_pixels * 5); // 5 values per point: x, y, z, class_id, confidence
         
-        // Parse pointcloud to get 3D coordinates for each pixel
-        const uint8_t* pc_data = sync_pointcloud_->data.data();
-        uint32_t point_step = sync_pointcloud_->point_step;
-        
         int points_beyond_max_distance = 0;
         
         // Iterate through each point
@@ -697,11 +690,11 @@ private:
         for (size_t i = 0; i < num_pixels; ++i)
         {
             // Extract point data
-            float x = points_rover[i * 5 + 0];
-            float y = points_rover[i * 5 + 1];
-            float z = points_rover[i * 5 + 2];
-            uint8_t class_id = static_cast<uint8_t>(points_rover[i * 5 + 3]);
-            float confidence = points_rover[i * 5 + 4];
+            float x = points_with_segmentation[i * 5 + 0];
+            float y = points_with_segmentation[i * 5 + 1];
+            float z = points_with_segmentation[i * 5 + 2];
+            uint8_t class_id = static_cast<uint8_t>(points_with_segmentation[i * 5 + 3]);
+            float confidence = points_with_segmentation[i * 5 + 4];
 
 
             float cost;
@@ -918,7 +911,7 @@ private:
             costmap_msg.data[i] = static_cast<uint8_t>(std::clamp(averaged_grid[i], 0.0f, 255.0f));
         }
         
-        costmap_pub_->publish(costmap_msg);
+        costmap_segmentation_pub_->publish(costmap_msg);
         
         // Also publish visualization (OccupancyGrid)
         publishSegmentationCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
@@ -958,7 +951,7 @@ private:
             }
         }
         
-        costmap_viz_pub_->publish(grid_msg);
+        costmap_segmentation_viz_pub_->publish(grid_msg);
     }
 
     void publishSNECostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y)
@@ -1011,7 +1004,7 @@ private:
         }
         
         // Publish the costmap
-        costmap_pub_->publish(costmap_msg);
+        costmap_sne_pub_->publish(costmap_msg);
         
         // Also publish as OccupancyGrid for RViz2 visualization
         publishSNECostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y);
@@ -1074,7 +1067,7 @@ private:
         }
         
         // Publish the visualization costmap
-        costmap_viz_pub_->publish(viz_msg);
+        costmap_sne_viz_pub_->publish(viz_msg);
     }
     
     // Timer
@@ -1086,10 +1079,10 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr segmentation_mask_sub_;
     
     // Publishers
-    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_pub_;
-    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_viz_pub_;
-    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_pub_;
-    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_viz_pub_;
+    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_sne_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sne_viz_pub_;
+    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_segmentation_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_segmentation_viz_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr cost_image_pub_;
     
     // Synchronized pointcloud data

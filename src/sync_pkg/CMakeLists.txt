@@ -27,6 +27,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
+add_executable(publish_raw_data src/raw_data_publisher/raw_data_publisher.cpp)
+ament_target_dependencies(publish_raw_data
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  geometry_msgs
+  OpenCV
+)
 
 add_executable(publisher_depth src/input_publisher_nodes/publisher_depth.cpp)
 ament_target_dependencies(publisher_depth
@@ -130,6 +139,7 @@ install(TARGETS
   test_publisher_sync_data
   sync_service_node
   sync_client_node
+  publish_raw_data
   DESTINATION lib/${PROJECT_NAME}
 )
 
