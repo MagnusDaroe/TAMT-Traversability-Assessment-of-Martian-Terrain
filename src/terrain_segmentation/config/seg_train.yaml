@@ -1,86 +1,118 @@
 # seg_train.yaml - Configuration for YOLO Segmentation Training
 
-# Training mode: 'train', 'search_hyperparameters', or 'search_hyperparameters_then_train_best'
-training_mode: 'train'  # Options: 'train', 'search_hyperparameters', 'search_hyperparameters_then_train_best'
+# ============================================================================
+# TRAINING MODE
+# ============================================================================
+# Options: 'train', 'search_hyperparameters', 'search_hyperparameters_then_train_best'
+training_mode: 'search_hyperparameters_then_train_best'
 
-# Model configuration
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
 model:
-  type: 'yolo11n-seg.pt'  # Options: yolo11n-seg.pt, yolo11s-seg.pt, yolo11m-seg.pt, yolo11l-seg.pt, yolo11x-seg.pt (Do not include v in the name)
-  pretrained: true  # Use pretrained weights
+  type: 'yolo11m-seg.pt'  # Options: yolo11n-seg.pt, yolo11s-seg.pt, yolo11m-seg.pt, yolo11l-seg.pt, yolo11x-seg.pt
+  pretrained: true  # Use pretrained weights (ignored if transfer_learning is enabled)
 
-# Output configuration
+# ============================================================================
+# OUTPUT CONFIGURATION
+# ============================================================================
 output:
   project_name: 'terrain_segmentation'
-  experiment_name: 'exp'  # Experiment name
-  save_dir: '~/models'  # Directory to save model experiments from ros2 workspace
+  experiment_name: 'tamt_20000_AI4Mars_hyperparam_tune'  # Base name for experiments
+  save_dir: '~/tamt/src/terrain_segmentation/models'
   exist_ok: true  # Allow overwriting existing experiments
-  verbose: true  # Verbose output
+  verbose: true
 
-# Dataset configuration
+# ============================================================================
+# DATASET CONFIGURATION
+# ============================================================================
 dataset:
-  path: '/home/daroe/tamt/dataset/AI4MARS_YOLO_sample_100'  # Path to dataset
-  yaml: 'data.yaml'  # Relative to dataset path or absolute path
-  train_split: 0.7  # Percentage of data for training
-  val_split: 0.2  # Percentage of data for validation
-  test_split: 0.1  # Percentage of data for testing
+  path: '/home/spacerob/tamt/dataset/tamt_simulation_5_20000_augmented'
+  yaml: 'data.yaml'
 
-# Training hyperparameters
-training:
-  epochs: 2
-  batch_size: 4
-  imgsz: 640  # Image size for training
-  patience: 50  # Early stopping patience
-  save_period: 10  # Save checkpoint every N epochs
-  
-  # Optimizer settings
-  optimizer: 'SGD'  # Options: 'SGD', 'Adam', 'AdamW', 'RMSProp'
-  lr0: 0.01  # Initial learning rate
-  lrf: 0.01  # Final learning rate (lr0 * lrf)
-  momentum: 0.937  # SGD momentum/Adam beta1
-  weight_decay: 0.0005  # Optimizer weight decay
-  warmup_epochs: 3.0  # Warmup epochs
-  warmup_momentum: 0.8  # Warmup initial momentum
-  warmup_bias_lr: 0.1  # Warmup initial bias lr
-  
-  # Loss weights
-  box: 7.5  # Box loss gain
-  cls: 0.5  # Class loss gain
-  dfl: 1.5  # DFL loss gain
-
-# Hyperparameter tuning configuration
+# ============================================================================
+# HYPERPARAMETER TUNING SETTINGS
+# These settings are ONLY used during the hyperparameter search phase
+# ============================================================================
 hyperparameter_tuning:
-  iterations: 30  # Number of tuning iterations
+  enabled: true  # Set to false to skip tuning phase
+  
+  # Tuning-specific parameters
+  iterations: 30  # Number of different hyperparameter combinations to try
+  epochs: 30      # Epochs per tuning iteration (keep low for faster search)
+  batch_size: 8   # Batch size during tuning (smaller = safer for memory)
+  
+  # Custom search space (optional - comment out to use YOLO defaults)
   search_space:
     # Learning rate
-    lr0: [1e-5, 1e-1]
-    lrf: [0.01, 1.0]
-    
+    lr0: [0.00001, 0.1]      # Initial learning rate range
+    lrf: [0.01, 1.0]         # Final learning rate factor range
     # Optimizer parameters
-    momentum: [0.6, 0.98]
-    weight_decay: [0.0, 0.001]
-    warmup_epochs: [0.0, 5.0]
-    warmup_momentum: [0.0, 0.95]
-    
+    momentum: [0.6, 0.98]    # SGD momentum range
+    weight_decay: [0.0, 0.001]  # Weight decay range
+    warmup_epochs: [0.0, 5.0]   # Warmup epochs range
+    warmup_momentum: [0.0, 0.95]  # Warmup momentum range
     # Loss weights
-    box: [0.02, 0.2]
-    cls: [0.2, 4.0]
+    box: [0.02, 0.2]         # Box loss weight range
+    cls: [0.2, 4.0]          # Class loss weight range
 
-# Hardware configuration
+# ============================================================================
+# FINAL TRAINING SETTINGS
+# These settings are used for the final training run after tuning completes
+# (or for standalone training when training_mode='train')
+# ============================================================================
+final_training:
+  epochs: 30              # Full training epochs 
+  batch_size: 16          # Final batch size (32 for nano model)
+  imgsz: 640              # Image size for training
+  patience: 30            # Early stopping patience (higher for final training)
+  save_period: 10         # Save checkpoint every N epochs
+  
+  # Optimizer settings (used if best hyperparameters not found from tuning)
+  optimizer: 'SGD'        # Options: 'SGD', 'Adam', 'AdamW', 'RMSProp'
+  lr0: 0.00918              # Initial learning rate (fallback value)
+  lrf: 0.01176               # Final learning rate factor (fallback value)
+  momentum: 0.83827         # SGD momentum (fallback value)
+  weight_decay: 0.00043    # Weight decay (fallback value)
+  warmup_epochs: 4.15705      # Warmup epochs (fallback value)
+  warmup_momentum: 0.9449    # Warmup momentum (fallback value)
+  warmup_bias_lr: 0.1     # Warmup bias learning rate (fallback value)
+  
+  # Loss weights (fallback values)
+  box: 0.18381                # Box loss gain
+  cls: 0.49158                # Class loss gain
+  dfl: 1.5                # DFL loss gain
+
+# ============================================================================
+# TRANSFER LEARNING CONFIGURATION
+# ============================================================================
+transfer_learning:
+  enabled: true
+  model_path: '/home/spacerob/tamt/src/terrain_segmentation/models/adapted_models/AI4Mars_to_TAMT.pt'
+
+# ============================================================================
+# HARDWARE CONFIGURATION
+# ============================================================================
 hardware:
-  device: '-1'  # Device to use: -1 (most idle GPU), 0, 1, 2, etc., 'cpu', or [0,1] for multi-GPU
+  device: '-1'  # -1 (auto-select idle GPU), 0, 1, 2, etc., 'cpu', or [0,1] for multi-GPU
 
-# Validation configuration
+# ============================================================================
+# VALIDATION CONFIGURATION
+# ============================================================================
 validation:
-  val: true  # Validate during training
-  plots: true  # Save training plots
-  save_json: true  # Save results to JSON
-  save_hybrid: false  # Save hybrid version of labels
-  conf: 0.001  # Confidence threshold for predictions
-  iou: 0.6  # IoU threshold for NMS
-  max_det: 300  # Maximum detections per image
-  half: false  # Use FP16 half-precision inference
+  val: true               # Validate during training
+  plots: true             # Save training plots
+  save_json: true         # Save results to JSON
+  save_hybrid: false      # Save hybrid version of labels
+  conf: 0.001             # Confidence threshold for predictions
+  iou: 0.6                # IoU threshold for NMS
+  max_det: 300            # Maximum detections per image
+  half: false             # Use FP16 half-precision inference
 
-# Resume training
+# ============================================================================
+# RESUME TRAINING (ignored when transfer_learning is enabled)
+# ============================================================================
 resume:
-  enabled: false  # Resume training from checkpoint
-  checkpoint_path: ''  # Path to checkpoint to resume from
+  enabled: false
+  checkpoint_path: '~/tamt/src/terrain_segmentation/models/terrain_segmentation/exp2/weights/last.pt'
+
