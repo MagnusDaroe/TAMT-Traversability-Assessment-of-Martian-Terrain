@@ -173,15 +173,18 @@ private:
         // This function will be called every 50ms
         if(new_sne_data_ && new_segmentation_mask_data_)
         {
+            // Capture timestamp once for all costmaps
+            rclcpp::Time timestamp = this->now();
+            
             std::vector<float> pointcloud = pointcloudToVector();
             std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, pointcloud_width_, pointcloud_height_, false);
             
             // Process SNE data
-            surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_);
+            surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
             new_sne_data_ = false;
 
             // Process segmentation mask data
-            segmentationMask(pointcloud_rover, class_ids_, confidences_, segmentation_width_, segmentation_height_);
+            segmentationMask(pointcloud_rover, class_ids_, confidences_, segmentation_width_, segmentation_height_, timestamp);
             new_segmentation_mask_data_ = false;
         }
     }
@@ -216,8 +219,9 @@ private:
         new_segmentation_mask_data_ = true;
     }
 
-    void segmentationMask(std::vector<float> pointcloud_rover, std::vector<uint8_t> class_ids_, 
-        std::vector<float> confidences_, uint32_t segmentation_width_, uint32_t segmentation_height_) 
+    void segmentationMask(std::vector<float>& pointcloud_rover, std::vector<uint8_t> class_ids_, 
+        std::vector<float> confidences_, uint32_t segmentation_width_, uint32_t segmentation_height_,
+        const rclcpp::Time& timestamp) 
     {
         // Combine pointcloud with segmentation data
         std::vector<float> points_with_segmentation = combinePointcloudWithSegmentation(
@@ -237,7 +241,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
         
         // Publish costmap
-        publishSegmentationCostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y);
+        publishSegmentationCostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
         
         RCLCPP_INFO(this->get_logger(), "Processed segmentation mask: %dx%d", segmentation_width_, segmentation_height_);
     }
@@ -262,7 +266,8 @@ private:
     }
 
     void surfaceNormals(const std::vector<float>& pointcloud_rover, 
-        const std::vector<float>& normals_camera, uint32_t width, uint32_t height)
+        const std::vector<float>& normals_camera, uint32_t width, uint32_t height,
+        const rclcpp::Time& timestamp)
     {
         std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height, true);
 
@@ -282,7 +287,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
 
         // Publish costmap with the actual origin used for binning
-        publishSNECostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y);
+        publishSNECostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
 
         RCLCPP_INFO(this->get_logger(), "Computed and published topography costmap");
     }
@@ -564,10 +569,6 @@ private:
             points_with_segmentation[i * 5 + 3] = class_id;
             points_with_segmentation[i * 5 + 4] = confidence;
         }
-
-        RCLCPP_DEBUG(this->get_logger(), 
-                     "Set confidence to 0 for %d/%zu points beyond max_distance (%.2fm)",
-                     points_beyond_max_distance, num_pixels, max_distance_);
         
         return points_with_segmentation;
     }
@@ -696,7 +697,6 @@ private:
             uint8_t class_id = static_cast<uint8_t>(points_with_segmentation[i * 5 + 3]);
             float confidence = points_with_segmentation[i * 5 + 4];
 
-
             float cost;
             
             // If confidence is 0 (invalid point), set cost to 255 (unknown/obstacle)
@@ -740,6 +740,9 @@ private:
         }
         
         RCLCPP_DEBUG(this->get_logger(), "Computed traversability costs for %zu points", num_pixels);
+
+
+
         return points_with_costs;
     }
     
@@ -885,24 +888,31 @@ private:
 
     void publishSegmentationCostmap(const std::vector<float>& averaged_grid, 
                         uint32_t width_cells, uint32_t height_cells, 
-                        float origin_x, float origin_y)
+                        float origin_x, float origin_y,
+                        const rclcpp::Time& timestamp)
     {
-        // Determine timestamp for costmap
-        rclcpp::Time timestamp = has_timestamp_ ? latest_pose_timestamp_ : this->now();
-        
         // Create Costmap message (nav2_msgs::msg::Costmap)
         auto costmap_msg = nav2_msgs::msg::Costmap();
+
+        // Set header
         costmap_msg.header.stamp = timestamp;
-        costmap_msg.header.frame_id = "base_link";  
+        costmap_msg.header.frame_id = "map";  
         
         // Set metadata
-        costmap_msg.metadata.resolution = resolution_;
         costmap_msg.metadata.size_x = width_cells;
         costmap_msg.metadata.size_y = height_cells;
+        costmap_msg.metadata.resolution = resolution_;
+
+        // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
         costmap_msg.metadata.origin.position.y = origin_y;
         costmap_msg.metadata.origin.position.z = 0.0;
-        costmap_msg.metadata.origin.orientation.w = 1.0;
+
+        // Keep initial orientation X foward, Y left, Z up
+        costmap_msg.metadata.origin.orientation.x = 0;
+        costmap_msg.metadata.origin.orientation.y = 0;
+        costmap_msg.metadata.origin.orientation.z = -0.7071068;
+        costmap_msg.metadata.origin.orientation.w = 0.7071068;
         
         // Convert float costs to uint8
         costmap_msg.data.resize(width_cells * height_cells);
@@ -924,17 +934,28 @@ private:
                            float origin_x, float origin_y,
                            const rclcpp::Time& timestamp)
     {
+        // Create OccupancyGrid message for RViz2 visualization
         auto grid_msg = nav_msgs::msg::OccupancyGrid();
+
+        // Set header
         grid_msg.header.stamp = timestamp;
-        grid_msg.header.frame_id = "base_link";  //  rover frame
+        grid_msg.header.frame_id = "map";  //  rover frame
         
+        // Set metadata
         grid_msg.info.resolution = resolution_;
         grid_msg.info.width = width_cells;
         grid_msg.info.height = height_cells;
+
+        // Set origin (position of cell (0,0) in the map frame)
         grid_msg.info.origin.position.x = origin_x;
         grid_msg.info.origin.position.y = origin_y;
         grid_msg.info.origin.position.z = 0.0;
-        grid_msg.info.origin.orientation.w = 1.0;
+
+        // Keep initial orientation X foward, Y left, Z up
+        grid_msg.info.origin.orientation.x = 0;
+        grid_msg.info.origin.orientation.y = 0;
+        grid_msg.info.origin.orientation.z = -0.7071068;
+        grid_msg.info.origin.orientation.w = 0.7071068;
         
         // Convert to OccupancyGrid format (0-100, -1 for unknown)
         grid_msg.data.resize(width_cells * height_cells);
@@ -954,13 +975,14 @@ private:
         costmap_segmentation_viz_pub_->publish(grid_msg);
     }
 
-    void publishSNECostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y)
+    void publishSNECostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                           const rclcpp::Time& timestamp)
     {
         // Create Costmap message
         auto costmap_msg = nav2_msgs::msg::Costmap();
         
         // Set header
-        costmap_msg.header.stamp = latest_pose_timestamp_;
+        costmap_msg.header.stamp = timestamp;
         costmap_msg.header.frame_id = "map"; 
         
         // Set metadata
@@ -1007,25 +1029,25 @@ private:
         costmap_sne_pub_->publish(costmap_msg);
         
         // Also publish as OccupancyGrid for RViz2 visualization
-        publishSNECostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y);
+        publishSNECostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
         
         RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
     }
 
-    void publishSNECostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y)
+    void publishSNECostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                              const rclcpp::Time& timestamp)
     {
         // Create OccupancyGrid message for RViz2 visualization
         auto viz_msg = nav_msgs::msg::OccupancyGrid();
         
         // Set header
-        viz_msg.header.stamp = latest_pose_timestamp_;
+        viz_msg.header.stamp = timestamp;
         viz_msg.header.frame_id = "map";
         
         // Set metadata
         viz_msg.info.width = width_cells;
         viz_msg.info.height = height_cells;
         viz_msg.info.resolution = resolution_;
-        viz_msg.info.map_load_time = latest_pose_timestamp_;
         
         // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
@@ -1106,10 +1128,6 @@ private:
 
     // Costmap metrics
     costMapMetrics costmap_metrics_;
-    
-    // Latest pose timestamp for costmap synchronization
-    rclcpp::Time latest_pose_timestamp_;
-    bool has_timestamp_ = false;
     
     // Camera parameters
     double camera_height_;
