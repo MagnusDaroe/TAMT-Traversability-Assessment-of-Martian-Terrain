@@ -34,8 +34,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
-
-# This node publishes the (unsynchronised) raw data read from /data folder
 add_executable(publish_raw_data src/raw_data_publisher/raw_data_publisher.cpp)
 ament_target_dependencies(publish_raw_data
   rclcpp

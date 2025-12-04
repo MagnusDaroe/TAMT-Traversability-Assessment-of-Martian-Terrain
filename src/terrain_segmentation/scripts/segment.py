@@ -39,12 +39,12 @@ class TAMTSegmentationNode(Node):
         self.current_image_header = None
                 
         # ------ Publishers ------
-        self.segmentation_mask_pub = self.create_publisher(Image, 'tamt/segmentation/masks_with_confidence', 10)
+        self.segmentation_mask_pub = self.create_publisher(Image, '/tamt/segmentation/masks_with_confidence', 10)
       
         # ------ Subscribers ------
         self.image_sub = self.create_subscription(
             Image,
-            'tamt/camera/image_raw',
+            '/tamt/sync_rgb',
             self.image_callback,
             10
         )

@@ -46,10 +46,10 @@ public:
                                       std::placeholders::_3));
 
     // Publishers for synchronized data
-    rgb_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/sync_rgb", 10);
-    depth_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/sync_depth", 10);
-    pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/sync_pointcloud", 10);
-    cam_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/sync_cam_2_glob_pose", 10);
+    rgb_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/tamt/sync_rgb", 10);
+    depth_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/tamt/sync_depth", 10);
+    pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/tamt/sync_pointcloud", 10);
+    cam_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tamt/sync_cam_2_glob_pose", 10);
 
     // Create service
     service_ = this->create_service<sync_pkg::srv::TriggerSync>(
