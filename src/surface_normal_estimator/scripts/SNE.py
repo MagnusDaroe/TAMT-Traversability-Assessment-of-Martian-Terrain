@@ -16,11 +16,11 @@ class SNE(nn.Module):
         v_map = v_map.type(torch.float32)
         u_map = u_map.type(torch.float32)
 
-        Z = depth   # h, w
-        Y = Z.mul((v_map - camParam[1,2])) / camParam[0,0]  # h, w
-        X = Z.mul((u_map - camParam[0,2])) / camParam[0,0]  # h, w
+        Z = depth
+        Y = Z.mul((v_map - camParam[1,2])) / camParam[1,1]
+        X = Z.mul((u_map - camParam[0,2])) / camParam[0,0]
         Z[torch.isnan(Z)] = 0
-        D = torch.div(torch.ones(h, w), Z)  # h, w
+        D = torch.div(torch.ones(h, w), Z)
 
         Gx = torch.tensor([[0,0,0],[-1,0,1],[0,0,0]], dtype=torch.float32)
         Gy = torch.tensor([[0,-1,0],[0,0,0],[0,1,0]], dtype=torch.float32)
@@ -28,8 +28,8 @@ class SNE(nn.Module):
         Gu = F.conv2d(D.view(1,1,h,w), Gx.view(1,1,3,3), padding=1)
         Gv = F.conv2d(D.view(1,1,h,w), Gy.view(1,1,3,3), padding=1)
 
-        nx_t = Gu * camParam[0,0]   # 1, 1, h, w
-        ny_t = Gv * camParam[1,1]   # 1, 1, h, w
+        nx_t = Gu * camParam[0,0]
+        ny_t = Gv * camParam[1,1]
 
         phi = torch.atan(torch.div(ny_t, nx_t)) + torch.ones([1,1,h,w])*3.141592657
         a = torch.cos(phi)
@@ -75,11 +75,10 @@ class SNE(nn.Module):
 
         nx[torch.isnan(nz)] = 0
         ny[torch.isnan(nz)] = 0
-        nz[torch.isnan(nz)] = -1
+        nz[torch.isnan(nz)] = 0
 
         sign = torch.ones((1,1,h,w), dtype=torch.float32)
         sign[ny > 0] = -1
-
         nx = torch.mul(nx, sign).squeeze(dim=0)
         ny = torch.mul(ny, sign).squeeze(dim=0)
         nz = torch.mul(nz, sign).squeeze(dim=0)
