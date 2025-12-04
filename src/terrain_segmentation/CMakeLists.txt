@@ -34,6 +34,20 @@ install(PROGRAMS
 # DESTINATION share/${PROJECT_NAME}/models
 # )
 
+add_executable(decode 
+  src/decode.cpp
+)
+ament_target_dependencies(decode
+  rclcpp
+  ament_index_cpp
+)
+
+# Install C++ executables
+install(TARGETS
+  decode
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install configuration files
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config

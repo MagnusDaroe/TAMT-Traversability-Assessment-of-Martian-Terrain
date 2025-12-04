@@ -201,3 +201,9 @@ python3 src/terrain_segmentation/scripts/reconfigure_model_output.py \
 
 
   https://y-t-g.github.io/tutorials/yolov8n-add-classes/
+
+
+
+
+
+    python3 /home/spacerob/tamt/src/terrain_segmentation/scripts/split_dataset.py /home/spacerob/tamt/dataset/tamt_simulation_4_3500 --train 0.8 --val 0.15 --test 0.05

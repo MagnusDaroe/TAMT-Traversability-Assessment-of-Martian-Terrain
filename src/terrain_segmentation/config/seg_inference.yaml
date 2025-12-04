@@ -2,12 +2,12 @@
 
 # Model configuration
 model:
-  model_dir: '/home/spacerob/tamt/src/terrain_segmentation/models/terrain_segmentation/tamt_transfer_4_retrain_transfer/weights/best.pt'
+  model_dir: '/home/spacerob/tamt/src/terrain_segmentation/models/terrain_segmentation/tamt_20000_AI4Mars_hyperparam_tune_final_best_transfer/weights/best.pt'
   device: '0'  # Device to use: 0, 1, 2, etc., 'cpu'
 
 # Dataset configuration
 dataset:
-  path: '/home/spacerob/tamt/dataset/tamt_simulation_2_100_split/images/test'  # Path to test images
+  path: '/home/spacerob/tamt/dataset/AI4MARS_NAV_GOOD/images'  # Path to test images
 
 # Inference parameters
 inference:

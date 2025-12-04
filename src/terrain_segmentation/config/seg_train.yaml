@@ -18,7 +18,7 @@ model:
 # ============================================================================
 output:
   project_name: 'terrain_segmentation'
-  experiment_name: 'ai4mars_hyperparameter'  # Base name for experiments
+  experiment_name: 'tamt_20000_AI4Mars_hyperparam_tune'  # Base name for experiments
   save_dir: '~/tamt/src/terrain_segmentation/models'
   exist_ok: true  # Allow overwriting existing experiments
   verbose: true
@@ -27,7 +27,7 @@ output:
 # DATASET CONFIGURATION
 # ============================================================================
 dataset:
-  path: '/home/spacerob/tamt/dataset/ai4mars_nav_split'
+  path: '/home/spacerob/tamt/dataset/tamt_simulation_5_20000_augmented'
   yaml: 'data.yaml'
 
 # ============================================================================
@@ -62,7 +62,7 @@ hyperparameter_tuning:
 # (or for standalone training when training_mode='train')
 # ============================================================================
 final_training:
-  epochs: 300              # Full training epochs 
+  epochs: 30              # Full training epochs 
   batch_size: 16          # Final batch size (32 for nano model)
   imgsz: 640              # Image size for training
   patience: 30            # Early stopping patience (higher for final training)
@@ -70,25 +70,25 @@ final_training:
   
   # Optimizer settings (used if best hyperparameters not found from tuning)
   optimizer: 'SGD'        # Options: 'SGD', 'Adam', 'AdamW', 'RMSProp'
-  lr0: 0.001              # Initial learning rate (fallback value)
-  lrf: 0.01               # Final learning rate factor (fallback value)
-  momentum: 0.937         # SGD momentum (fallback value)
-  weight_decay: 0.0005    # Weight decay (fallback value)
-  warmup_epochs: 3.0      # Warmup epochs (fallback value)
-  warmup_momentum: 0.8    # Warmup momentum (fallback value)
+  lr0: 0.00918              # Initial learning rate (fallback value)
+  lrf: 0.01176               # Final learning rate factor (fallback value)
+  momentum: 0.83827         # SGD momentum (fallback value)
+  weight_decay: 0.00043    # Weight decay (fallback value)
+  warmup_epochs: 4.15705      # Warmup epochs (fallback value)
+  warmup_momentum: 0.9449    # Warmup momentum (fallback value)
   warmup_bias_lr: 0.1     # Warmup bias learning rate (fallback value)
   
   # Loss weights (fallback values)
-  box: 7.5                # Box loss gain
-  cls: 0.5                # Class loss gain
+  box: 0.18381                # Box loss gain
+  cls: 0.49158                # Class loss gain
   dfl: 1.5                # DFL loss gain
 
 # ============================================================================
 # TRANSFER LEARNING CONFIGURATION
 # ============================================================================
 transfer_learning:
-  enabled: false
-  model_path: '/home/spacerob/tamt/src/terrain_segmentation/models/terrain_segmentation/tamt_transfer_3_retrain_transfer/weights/best.pt'
+  enabled: true
+  model_path: '/home/spacerob/tamt/src/terrain_segmentation/models/adapted_models/AI4Mars_to_TAMT.pt'
 
 # ============================================================================
 # HARDWARE CONFIGURATION
