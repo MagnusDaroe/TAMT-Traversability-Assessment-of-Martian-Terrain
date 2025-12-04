@@ -207,3 +207,13 @@ python3 src/terrain_segmentation/scripts/reconfigure_model_output.py \
 
 
     python3 /home/spacerob/tamt/src/terrain_segmentation/scripts/split_dataset.py /home/spacerob/tamt/dataset/tamt_simulation_4_3500 --train 0.8 --val 0.15 --test 0.05
+ 
+
+  ros2 run terrain_segmentation Image_publisher_node.py \
+    --ros-args \
+    -p image_folder:=/home/daroe/tamt/dataset/AI4MARS_NAV_GOOD/images \
+    -p publish_rate:=2.0 \
+    -p loop:=true
+
+
+    m2020_test_NLF_0034_0669963392_071ECM_N0031392NCAM03034_07_195J_merged12.jpeg

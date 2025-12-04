@@ -12,7 +12,7 @@ dataset:
 # Inference parameters
 inference:
   conf: 0.25          # Confidence threshold
-  iou: 0.10           # IoU threshold for NMS
+  iou: 0.50           # IoU threshold for NMS
   imgsz: 640          # Input image size
   max_det: 300        # Maximum number of detections per image
   save_dir: '~/inference_results'  # Directory to save results

@@ -9,3 +9,5 @@ src/terrain_segmentation/models/terrain_segmentation
 dataset/ai4mars_nav
 dataset/ai4mars_nav_split
 dataset/
+yolo11m-seg.pt
+yolo11n-seg.pt
