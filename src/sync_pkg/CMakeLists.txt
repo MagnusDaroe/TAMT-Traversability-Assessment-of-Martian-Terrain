@@ -13,60 +13,90 @@ find_package(ament_index_cpp REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+# After all find_package calls, add:
+include_directories(
+  include
+  ${rclcpp_INCLUDE_DIRS}
+  ${sensor_msgs_INCLUDE_DIRS}
+  ${cv_bridge_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+# Generate service files
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/TriggerSync.srv"
+  DEPENDENCIES sensor_msgs geometry_msgs
+)
 
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
-add_executable(publisher_depth src/publisher_depth.cpp)
-ament_target_dependencies(publisher_depth
+# This node publishes the (unsynchronised) raw data read from /data folder
+add_executable(publish_raw_data src/raw_data_publisher/raw_data_publisher.cpp)
+ament_target_dependencies(publish_raw_data
   rclcpp
   sensor_msgs
   ament_index_cpp
   cv_bridge
+  geometry_msgs
+  OpenCV
 )
 
-add_executable(publisher_rgb src/publisher_rgb.cpp)
-ament_target_dependencies(publisher_rgb
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-)
-
-add_executable(publisher_sync_data src/sync_data.cpp)
-ament_target_dependencies(publisher_sync_data
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  message_filters
-)
-
-add_executable(publisher_sync_data_new src/new_sync_node.cpp)
-ament_target_dependencies(publisher_sync_data_new
+# This node tests the synchronisation by subscribing to the synchronised data topic and saves in /sanity_data folder
+add_executable(sanity_test src/sanity_tester/sanity_test.cpp)
+ament_target_dependencies(sanity_test
   rclcpp
   sensor_msgs
   ament_index_cpp
   cv_bridge
   message_filters
+  geometry_msgs
+)
+target_link_libraries(sanity_test ${OpenCV_LIBRARIES})
+
+
+# This node provides a service to synchronise data and publish synchronised data topic
+add_executable(data_synchroniser src/synchronised_data_publisher/sync_service_node.cpp)
+ament_target_dependencies(data_synchroniser
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  message_filters
+  OpenCV
+  geometry_msgs
 )
 
-# add_executable(test_node src/test_node.cpp)
-# ament_target_dependencies(test_node
-#   rclcpp
-#   sensor_msgs
-#   cv_bridge
-#   OpenCV
-# )
+# This node is a client to trigger the synchronisation service request
+add_executable(data_synchroniser_client src/synchronised_data_publisher/sync_client_node.cpp)
+ament_target_dependencies(data_synchroniser_client
+  rclcpp
+  sensor_msgs
+  ament_index_cpp
+  cv_bridge
+  message_filters
+  OpenCV
+  geometry_msgs
+)
+
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(data_synchroniser "${cpp_typesupport_target}")
+target_link_libraries(data_synchroniser_client "${cpp_typesupport_target}")
 
 install(TARGETS
-  publisher_depth
-  publisher_rgb 
-  publisher_sync_data
-  publisher_sync_data_new
-  # test_node
+  publish_raw_data
+  sanity_test
+  data_synchroniser
+  data_synchroniser_client
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY include/
+  DESTINATION include/
 )
 
 # Install Depth_data directory (source sits under src/) into the package share so it is available at runtime
@@ -74,9 +104,8 @@ install(TARGETS
 #  DESTINATION share/${PROJECT_NAME}
 #)
 
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/depth
-  ${CMAKE_CURRENT_SOURCE_DIR}/data/rgb
-  DESTINATION share/${PROJECT_NAME}
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/
+  DESTINATION share/${PROJECT_NAME}/data
   USE_SOURCE_PERMISSIONS
 )
 

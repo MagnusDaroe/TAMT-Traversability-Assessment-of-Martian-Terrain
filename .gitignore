@@ -11,3 +11,6 @@ dataset/ai4mars_nav_split
 dataset/
 yolo11m-seg.pt
 yolo11n-seg.pt
+sanity_data/ 
+*.Zone.Identifier
+
