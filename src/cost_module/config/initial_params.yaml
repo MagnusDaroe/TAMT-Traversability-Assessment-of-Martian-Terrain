@@ -1,0 +1,38 @@
+costmap_sne:
+  ros__parameters:
+    #! Camera parameters
+    camera:
+      tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
+      fov_x: 110.0  # Field of view in X direction (degrees) Horizontal
+      fov_y: 70.0  # Field of view in Y direction (degrees) Vertical
+      max_distance: 7.0  # Maximum sensing distance (meters)
+      height: 0.43  # Camera height from ground (meters)
+      
+      # Static transform from rover frame to camera frame
+      transform:
+        translation:
+          x: 0.157499
+          y: 0.059899
+          z: 0.238857
+        rotation: # quat that rotates from rover frame to camera frame (horizontal)
+          x: 0.5
+          y: -0.5
+          z: -0.5
+          w: 0.5
+    
+    #! Rover parameters
+    rover:
+      width: 1.0  # Rover width (meters)
+      length: 1.2  # Rover length (meters)
+    
+    #! Costmap parameters
+    costmap:
+      resolution: 0.01  # Costmap resolution (meters per cell)
+    
+    #! Class risk parameters
+    class_risks:
+      soil: 0.2
+      bedrock: 0.1
+      sand: 0.3
+      rocks: 0.9
+      hole: 0.95
