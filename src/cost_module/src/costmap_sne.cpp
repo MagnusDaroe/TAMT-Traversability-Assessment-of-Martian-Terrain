@@ -35,8 +35,15 @@ public:
         
         this->declare_parameter("rover.width", 1.0);
         this->declare_parameter("rover.length", 1.5);
-        this->declare_parameter("costmap.resolution", 0.05);
+        this->declare_parameter("costmap.internal_resolution", 0.01);
+        this->declare_parameter("costmap.output_resolution", 0.05);
         
+        //! Need params for dilation 
+        dilation_kernel_size_ = 3;
+        dilation_min_confidence_ = 0.7;
+        dilation_enabled_ = true;
+        
+
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
         tilt_angle_ = this->get_parameter("camera.tilt_angle").as_double();
@@ -68,14 +75,15 @@ public:
         ));
         rover_width_ = this->get_parameter("rover.width").as_double();
         rover_length_ = this->get_parameter("rover.length").as_double();
-        resolution_ = this->get_parameter("costmap.resolution").as_double();
+        internal_resolution_ = this->get_parameter("costmap.internal_resolution").as_double();
+        output_resolution_ = this->get_parameter("costmap.output_resolution").as_double();
 
         RCLCPP_INFO(this->get_logger(), "Loaded camera parameters - FOV X: %.1f°, FOV Y: %.1f°, Max distance: %.2fm",
                     fov_x_, fov_y_, max_distance_);
         RCLCPP_INFO(this->get_logger(), "Loaded rover parameters - Width: %.2fm, Length: %.2fm",
                     rover_width_, rover_length_);
-        RCLCPP_INFO(this->get_logger(), "Loaded costmap parameters - Resolution: %.3fm",
-                    resolution_);
+        RCLCPP_INFO(this->get_logger(), "Loaded costmap parameters - Internal resolution: %.3fm, Output resolution: %.3fm",
+                internal_resolution_, output_resolution_);
                 // Declare risk parameters for different segmentation classes
         this->declare_parameter("class_risks.soil", 0.2);
         this->declare_parameter("class_risks.bedrock", 0.1);
@@ -168,24 +176,66 @@ private:
     double size[2] = {0.0, 0.0}; // size[0]: Height of the map, size[1]: Width of the map
     };
 
+    // - - - - - - - - - - - Callback Functions - - - - - - - - - - -
+
     void timerCallback()
     {
-        // This function will be called every 50ms
         if(new_sne_data_ && new_segmentation_mask_data_)
         {
-            // Capture timestamp once for all costmaps
+            if (!sync_pointcloud_)
+            {
+                RCLCPP_WARN(this->get_logger(), "Pointcloud not yet received, skipping processing");
+                return;
+            }
+            
             rclcpp::Time timestamp = this->now();
             
             std::vector<float> pointcloud = pointcloudToVector();
             std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, pointcloud_width_, pointcloud_height_, false);
             
             // Process SNE data
-            surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
+            auto [sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
+                surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
             new_sne_data_ = false;
+            
+            // Publish SNE costmap with CORRECT variable names
+            publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
 
-            // Process segmentation mask data
-            segmentationMask(pointcloud_rover, class_ids_, confidences_, segmentation_width_, segmentation_height_, timestamp);
+            // Process segmentation mask data and get costmap
+            auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
+                segmentationMask(pointcloud_rover, class_ids_, confidences_, 
+                            segmentation_width_, segmentation_height_, timestamp);
             new_segmentation_mask_data_ = false;
+
+            if (seg_costmap.empty())
+            {
+                RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping dilation");
+                return;
+            }
+
+            // Apply dilation if enabled
+            std::vector<float> dilated_costmap = seg_costmap;
+            if (dilation_enabled_)
+            {
+                dilated_costmap = dilateToFillUnknown(
+                    seg_costmap, class_grid, confidence_grid, 
+                    seg_width_cells, seg_height_cells, 
+                    dilation_kernel_size_, dilation_min_confidence_);
+                
+                RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
+            }
+        
+            // Publish final segmentation costmap
+            //publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
+
+            
+
+            // Combine Cost maps
+            std::vector<float> combined_costmap = combineCostMaps(sne_costmap, dilated_costmap);
+            
+            // Downscale
+            auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(combined_costmap, seg_width_cells, seg_height_cells, internal_resolution_, output_resolution_);
+            publishSegmentationCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, timestamp);
         }
     }
 
@@ -219,32 +269,358 @@ private:
         new_segmentation_mask_data_ = true;
     }
 
-    void segmentationMask(std::vector<float>& pointcloud_rover, std::vector<uint8_t> class_ids_, 
-        std::vector<float> confidences_, uint32_t segmentation_width_, uint32_t segmentation_height_,
+    // - - - - - - - - - - - Segmentation Functions - - - - - - - - - - -
+
+    std::tuple<std::vector<float>, std::vector<uint8_t>, std::vector<float>, uint32_t, uint32_t, float, float> segmentationMask(
+        std::vector<float>& pointcloud_rover, 
+        std::vector<uint8_t> class_ids_, 
+        std::vector<float> confidences_, 
+        uint32_t segmentation_width_, 
+        uint32_t segmentation_height_,
         const rclcpp::Time& timestamp) 
-    {
-        // Combine pointcloud with segmentation data
-        std::vector<float> points_with_segmentation = combinePointcloudWithSegmentation(
-            pointcloud_rover, class_ids_, confidences_, segmentation_width_, segmentation_height_);
-        
-        if (points_with_segmentation.empty())
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to combine pointcloud with segmentation");
-            return;
+            // Combine pointcloud with segmentation data
+            std::vector<float> points_with_segmentation = combinePointcloudWithSegmentation(
+                pointcloud_rover, class_ids_, confidences_, segmentation_width_, segmentation_height_);
+            
+            if (points_with_segmentation.empty())
+            {
+                RCLCPP_ERROR(this->get_logger(), "Failed to combine pointcloud with segmentation");
+                return std::make_tuple(std::vector<float>(), std::vector<uint8_t>(), std::vector<float>(), 0, 0, 0.0f, 0.0f);
+            }
+            
+            // Compute traversability cost based on segmentation
+            std::vector<float> points_with_costs = computeSegmentationTraversabilityCost(
+                points_with_segmentation, segmentation_width_, segmentation_height_);
+            
+            // Create averaged cost grid
+            auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = 
+                createAveragedCostGrid(points_with_costs, costmap_metrics_);
+            
+            // Create class and confidence grids
+            auto [class_grid, confidence_grid] = createClassAndConfidenceGrids(
+                points_with_segmentation, points_with_costs,
+                width_cells, height_cells, origin_x, origin_y);
+            
+            // Return all grids for further processing
+            return std::make_tuple(averaged_grid, class_grid, confidence_grid, 
+                                width_cells, height_cells, origin_x, origin_y);
+        }
+
+    std::tuple<std::vector<uint8_t>, std::vector<float>> createClassAndConfidenceGrids(
+    const std::vector<float>& points_with_segmentation,
+    const std::vector<float>& points_with_costs,
+    uint32_t width_cells, 
+    uint32_t height_cells,
+    float origin_x,
+    float origin_y)
+    {
+        size_t num_cells = static_cast<size_t>(width_cells) * static_cast<size_t>(height_cells);
+        
+        // Accumulators for class and confidence
+        std::vector<double> confidence_sum(num_cells, 0.0);
+        std::vector<uint32_t> count(num_cells, 0);
+        std::vector<std::map<uint8_t, uint32_t>> class_counts(num_cells);
+        
+        // Bin points into cells
+        for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
+        {
+            float x = points_with_costs[i + 0];
+            float y = points_with_costs[i + 1];
+            
+            // Get class ID and confidence from points_with_segmentation
+            // Format: [x, y, z, class_id, confidence]
+            size_t seg_idx = i / 4 * 5;
+            uint8_t class_id = static_cast<uint8_t>(points_with_segmentation[seg_idx + 3]);
+            float confidence = points_with_segmentation[seg_idx + 4];
+
+            if (!std::isfinite(x) || !std::isfinite(y))
+                continue;
+
+            int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
+            int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
+
+            if (ix < 0 || iy < 0 || 
+                static_cast<uint32_t>(ix) >= height_cells || 
+                static_cast<uint32_t>(iy) >= width_cells)
+                continue;
+
+            size_t cell_idx = static_cast<size_t>(ix) * static_cast<size_t>(width_cells) + static_cast<size_t>(iy);
+            confidence_sum[cell_idx] += static_cast<double>(confidence);
+            count[cell_idx] += 1;
+            class_counts[cell_idx][class_id] += 1;
+        }
+
+        // Compute dominant class and average confidence per cell
+        std::vector<uint8_t> class_map(num_cells, 255);  // Default to unknown
+        std::vector<float> confidence_map(num_cells, 0.0f);
+        
+        for (size_t ci = 0; ci < num_cells; ++ci)
+        {
+            if (count[ci] > 0)
+            {
+                confidence_map[ci] = static_cast<float>(confidence_sum[ci] / static_cast<double>(count[ci]));
+                
+                // Find dominant class in this cell
+                uint8_t dominant_class = 255;
+                uint32_t max_count = 0;
+                for (const auto& [cls, cnt] : class_counts[ci])
+                {
+                    if (cnt > max_count)
+                    {
+                        max_count = cnt;
+                        dominant_class = cls;
+                    }
+                }
+                class_map[ci] = dominant_class;
+            }
+        }
+
+        return std::make_tuple(std::move(class_map), std::move(confidence_map));
+    }
+
+    std::vector<float> dilateToFillUnknown(
+    const std::vector<float>& costmap,
+    const std::vector<uint8_t>& class_map,
+    const std::vector<float>& confidence_map,
+    uint32_t width, uint32_t height,
+    int kernel_size,
+    float min_confidence)
+    {
+        if (kernel_size % 2 == 0)
+        {
+            kernel_size += 1;
+            RCLCPP_WARN(this->get_logger(), "Kernel size must be odd, increased to %d", kernel_size);
         }
         
-        // Compute traversability cost based on segmentation
-        std::vector<float> points_with_costs = computeSegmentationTraversabilityCost(points_with_segmentation, segmentation_width_, segmentation_height_);
+        int half_kernel = kernel_size / 2;
+        std::vector<float> dilated_costmap = costmap;
+        std::vector<uint8_t> dilated_class_map = class_map;
         
-        // Create averaged cost grid
-        auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(points_with_costs, costmap_metrics_);
-        RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
+        // Track distance and confidence for each cell to determine best source
+        std::vector<float> best_distance(costmap.size(), std::numeric_limits<float>::max());
+        std::vector<float> best_confidence(costmap.size(), 0.0f);
         
-        // Publish costmap
-        publishSegmentationCostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        // Iterate through all known cells
+        for (uint32_t y = 0; y < height; ++y)
+        {
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                size_t center_idx = y * width + x;
+                
+                // Only dilate FROM cells that are known and confident
+                if (class_map[center_idx] == 255 || 
+                    confidence_map[center_idx] < min_confidence ||
+                    costmap[center_idx] >= 255.0f)
+                {
+                    continue;
+                }
+                
+                float center_cost = costmap[center_idx];
+                uint8_t center_class = class_map[center_idx];
+                float center_confidence = confidence_map[center_idx];
+                
+                // Propagate INTO neighborhood
+                for (int ky = -half_kernel; ky <= half_kernel; ++ky)
+                {
+                    for (int kx = -half_kernel; kx <= half_kernel; ++kx)
+                    {
+                        int nx = static_cast<int>(x) + kx;
+                        int ny = static_cast<int>(y) + ky;
+                        
+                        if (nx < 0 || ny < 0 || 
+                            nx >= static_cast<int>(width) || 
+                            ny >= static_cast<int>(height))
+                        {
+                            continue;
+                        }
+                        
+                        size_t neighbor_idx = ny * width + nx;
+                        
+                        // Only fill unknown cells (cost = 255)
+                        if (costmap[neighbor_idx] >= 255.0f)
+                        {
+                            // Calculate Euclidean distance from center to neighbor
+                            float distance = std::sqrt(kx * kx + ky * ky);
+                            
+                            // Decide if this source is better than the current best
+                            bool should_update = false;
+                            
+                            if (best_distance[neighbor_idx] == std::numeric_limits<float>::max())
+                            {
+                                // First time filling this cell
+                                should_update = true;
+                            }
+                            else if (distance < best_distance[neighbor_idx] - 0.01f)  // Small epsilon for floating point
+                            {
+                                // Closer neighbor wins (priority 1: distance)
+                                should_update = true;
+                            }
+                            else if (std::abs(distance - best_distance[neighbor_idx]) < 0.01f && 
+                                    center_confidence > best_confidence[neighbor_idx])
+                            {
+                                // Same distance, but higher confidence wins (priority 2: confidence)
+                                should_update = true;
+                            }
+                            
+                            if (should_update)
+                            {
+                                dilated_costmap[neighbor_idx] = center_cost;
+                                dilated_class_map[neighbor_idx] = center_class;
+                                best_distance[neighbor_idx] = distance;
+                                best_confidence[neighbor_idx] = center_confidence;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
-        RCLCPP_INFO(this->get_logger(), "Processed segmentation mask: %dx%d", segmentation_width_, segmentation_height_);
+        // Count how many cells were filled
+        int filled_cells = 0;
+        for (size_t i = 0; i < costmap.size(); ++i)
+        {
+            if (costmap[i] >= 255.0f && dilated_costmap[i] < 255.0f)
+            {
+                filled_cells++;
+            }
+        }
+        
+        RCLCPP_INFO(this->get_logger(), 
+                    "Dilation filled %d unknown cells (kernel_size=%d)", 
+                    filled_cells, kernel_size);
+        
+        return dilated_costmap;
     }
+
+    void decodeMask(const sensor_msgs::msg::Image::SharedPtr encoded_mask,
+                    std::vector<uint8_t>& class_ids,
+                    std::vector<float>& confidences)
+    {
+        uint32_t width = encoded_mask->width;
+        uint32_t height = encoded_mask->height;
+        size_t num_pixels = width * height;
+        
+        class_ids.resize(num_pixels);
+        confidences.resize(num_pixels);
+        
+        // Get pointer to data
+        const uint16_t* encoded_ptr = reinterpret_cast<const uint16_t*>(encoded_mask->data.data());
+        
+        // Decode each pixel
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            uint16_t encoded_value = encoded_ptr[i];
+            
+            // Extract upper 8 bits for class_id
+            class_ids[i] = static_cast<uint8_t>(encoded_value >> 8);
+            
+            // Extract lower 8 bits for confidence and normalize to 0.0-1.0
+            uint8_t confidence_byte = static_cast<uint8_t>(encoded_value & 0xFF);
+            confidences[i] = confidence_byte / 255.0f;
+        }
+        
+        RCLCPP_DEBUG(this->get_logger(), "Decoded segmentation mask: %zu pixels", num_pixels);
+    }
+
+    std::vector<float> computeSegmentationTraversabilityCost(std::vector<float> points_with_segmentation,
+                                                  uint32_t width, uint32_t height)
+    {
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
+        
+        // Compute cost for each point
+        // Cost function: C = C_risk * certainty * 255, where C in range [0, 255]
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            // Extract point data
+            float x = points_with_segmentation[i * 5 + 0];
+            float y = points_with_segmentation[i * 5 + 1];
+            float z = points_with_segmentation[i * 5 + 2];
+            uint8_t class_id = static_cast<uint8_t>(points_with_segmentation[i * 5 + 3]);
+            float confidence = points_with_segmentation[i * 5 + 4];
+
+            float cost;
+            
+            // If confidence is 0 (invalid point), set cost to 255 (unknown/obstacle)
+            if (confidence <= 0.0f || class_id == 255) 
+            {
+                cost = 255.0f;
+            }
+            else
+            {
+                // Get risk value for this class
+                float risk = 0.5f;          // Default risk if class not found
+                auto it = risk_params_.find(class_id);
+                if (it != risk_params_.end())
+                {
+                    risk = it->second;
+                }
+
+                // Compute cost: C = risk * confidence * 255
+                
+                float x = risk * confidence;
+                const float a = 15.0f; // steepness
+                const float b = 0.3f;  // midpoint
+                float sigmoid = 1.0f / (1.0f + std::exp(-a * (x - b)));
+                cost = sigmoid * 255.0f;
+            
+                // Clamp to valid range
+                cost = std::clamp(cost, 0.0f, 255.0f);
+            }
+            
+           
+            // Store: [x, y, z, cost]
+            points_with_costs[i * 4 + 0] = x;
+            points_with_costs[i * 4 + 1] = y;
+            points_with_costs[i * 4 + 2] = z;
+            points_with_costs[i * 4 + 3] = cost;
+        }
+        return points_with_costs;
+    }
+
+    std::vector<float> combinePointcloudWithSegmentation(
+    std::vector<float> pointcloud_rover,
+    const std::vector<uint8_t>& class_ids,
+    const std::vector<float>& confidences,
+    uint32_t width, uint32_t height)
+    {        
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_segmentation(num_pixels * 5); // 5 values per point: x, y, z, class_id, confidence
+        
+        int points_beyond_max_distance = 0;
+        
+        // Iterate through each point
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            float x = pointcloud_rover[i * 3 + 0];
+            float y = pointcloud_rover[i * 3 + 1];
+            float z = pointcloud_rover[i * 3 + 2];
+            
+            // Get corresponding segmentation data
+            float class_id = static_cast<float>(class_ids[i]);
+            float confidence = confidences[i];
+            
+            // Set confidence to 0 if z (depth) exceeds max_distance or is invalid
+            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
+            {
+                confidence = 0.0f;
+                points_beyond_max_distance++;
+            }
+            
+            // Store combined data: [x, y, z, class_id, confidence]
+            points_with_segmentation[i * 5 + 0] = x;
+            points_with_segmentation[i * 5 + 1] = y;
+            points_with_segmentation[i * 5 + 2] = z;
+            points_with_segmentation[i * 5 + 3] = class_id;
+            points_with_segmentation[i * 5 + 4] = confidence;
+        }
+        
+        return points_with_segmentation;
+    }
+
+
+    // - - - - - - - - - - - Surface Normal Functions - - - - - - - - - - -
 
     void surfaceNormalsCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
@@ -265,7 +641,7 @@ private:
         new_sne_data_ = true;
     }
 
-    void surfaceNormals(const std::vector<float>& pointcloud_rover, 
+    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> surfaceNormals(const std::vector<float>& pointcloud_rover, 
         const std::vector<float>& normals_camera, uint32_t width, uint32_t height,
         const rclcpp::Time& timestamp)
     {
@@ -284,52 +660,204 @@ private:
         publishCosts(traversability_costs);
         // Create averaged cost grid
         auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(traversability_costs, costmap_metrics_);
-        RCLCPP_INFO(this->get_logger(), "Created averaged cost grid: %dx%d cells", width_cells, height_cells);
 
-        // Publish costmap with the actual origin used for binning
-        publishSNECostmap(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-
-        RCLCPP_INFO(this->get_logger(), "Computed and published topography costmap");
+        return std::make_tuple(averaged_grid, width_cells, height_cells, origin_x, origin_y);
     }
 
-    void publishCosts(const std::vector<float>& traversability_costs)
+    std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_rover, 
+                                                    uint32_t width, uint32_t height)
     {
-        // traversability_costs format: [x, y, z, cost] for each point
-        // We need to reconstruct the image with costs in their original pixel positions
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_theta_rover(num_pixels * 4); // 4 values per point: x, y, z, theta
         
-        size_t num_points = traversability_costs.size() / 4;
-        
-        // Assume standard camera resolution (you may want to pass width/height as parameters)
-        uint32_t width = sync_pointcloud_->width;
-        uint32_t height = sync_pointcloud_->height;
-        
-        // Create image message
-        auto cost_image_msg = sensor_msgs::msg::Image();
-        cost_image_msg.header.stamp = this->now();
-        cost_image_msg.header.frame_id = "camera_frame";
-        cost_image_msg.height = height;
-        cost_image_msg.width = width;
-        cost_image_msg.encoding = "32FC1";  // Single channel 32-bit float
-        cost_image_msg.is_bigendian = false;
-        cost_image_msg.step = width * sizeof(float);
-        
-        // Allocate data
-        cost_image_msg.data.resize(width * height * sizeof(float));
-        float* cost_data = reinterpret_cast<float*>(cost_image_msg.data.data());
-        
-        // Fill the image with cost values
-        for (size_t i = 0; i < num_points; ++i)
+        // Compute polar angle for each point's normal vector
+        for (size_t i = 0; i < num_pixels; ++i)
         {
-            float cost = traversability_costs[i * 4 + 3];  // Extract cost from [x, y, z, cost]
-            cost_data[i] = cost;
+            // Extract point coordinates in rover frame
+            float x_rover = points_with_normals_rover[i * 6 + 0];
+            float y_rover = points_with_normals_rover[i * 6 + 1];
+            float z_rover = points_with_normals_rover[i * 6 + 2];
+            
+            // Extract normal vector components in rover frame
+            float nx_rover = points_with_normals_rover[i * 6 + 3];
+            float ny_rover = points_with_normals_rover[i * 6 + 4];
+            float nz_rover = points_with_normals_rover[i * 6 + 5];
+            
+            // Compute polar angle θ (theta) using arctan formula
+            // θ = arctan(√(nx² + ny²) / nz)
+            float xy_magnitude = std::sqrt(nx_rover * nx_rover + ny_rover * ny_rover);
+            float theta = std::atan2(xy_magnitude, nz_rover);
+            
+            // Store combined data: [x, y, z, theta] in rover frame
+            points_with_theta_rover[i * 4 + 0] = x_rover;
+            points_with_theta_rover[i * 4 + 1] = y_rover;
+            points_with_theta_rover[i * 4 + 2] = z_rover;
+            points_with_theta_rover[i * 4 + 3] = theta;
         }
         
-        // Publish the cost image
-        cost_image_pub_->publish(cost_image_msg);
-        
-        RCLCPP_DEBUG(this->get_logger(), "Published cost image with %dx%d pixels", width, height);
+        // Print theta for pixels at row 283, columns 36-38
+        if (width > 38 && height > 283)
+        {
+            RCLCPP_INFO(this->get_logger(), "Theta values for pixels at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                float x = points_with_theta_rover[idx * 4 + 0];
+                float y = points_with_theta_rover[idx * 4 + 1];
+                float z = points_with_theta_rover[idx * 4 + 2];
+                float theta = points_with_theta_rover[idx * 4 + 3];
+                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f theta=%.6f", 
+                           idx, u, v, x, y, z, theta);
+            }
+        }
+
+        return points_with_theta_rover;
     }
-    
+
+    std::vector<float> computeSNETraversabilityCost(const std::vector<float>& points_with_theta_rover,
+                                                  uint32_t width, uint32_t height)
+    {
+        // Create output vector for points with traversability costs
+        // Format: [x, y, z, cost] for each point
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
+        
+        // Cost function: C = -13.857 * exp(theta) + 320.68
+        const float exponential_coefficient = 13.857f;
+        const float added_coefficient = 320.68f;
+        
+        // Compute cost for each point
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            // Get point coordinates from the points_with_theta_rover vector
+            // Input format: [x, y, z, theta] per point
+            float x_rover = points_with_theta_rover[i * 4 + 0];
+            float y_rover = points_with_theta_rover[i * 4 + 1];
+            float z_rover = points_with_theta_rover[i * 4 + 2];
+            float theta = points_with_theta_rover[i * 4 + 3];
+            
+            // Compute cost
+            float cost;
+            if (std::isnan(theta) || theta == 0.0f)
+            {
+                cost = 255.0f;
+            }
+            else
+            {
+                // Compute cost: C = -13.857 * exp(theta) + 320.68 (theta in radians)
+                cost = -exponential_coefficient * std::exp(theta) + added_coefficient;
+            }
+            
+            // Store combined data: [x, y, z, cost] in rover frame
+            points_with_costs[i * 4 + 0] = x_rover;
+            points_with_costs[i * 4 + 1] = y_rover;
+            points_with_costs[i * 4 + 2] = z_rover;
+            points_with_costs[i * 4 + 3] = cost;
+        }
+        
+        // Print cost for pixels at row 283, columns 36-38
+        if (width > 38 && height > 283)
+        {
+            RCLCPP_INFO(this->get_logger(), "Cost values for pixels at row 283, columns 36-38:");
+            for (size_t u = 36; u <= 38; ++u)
+            {
+                size_t v = 283;
+                size_t idx = v * static_cast<size_t>(width) + u;
+                float x = points_with_costs[idx * 4 + 0];
+                float y = points_with_costs[idx * 4 + 1];
+                float z = points_with_costs[idx * 4 + 2];
+                float cost = points_with_costs[idx * 4 + 3];
+                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f cost=%.6f", 
+                           idx, u, v, x, y, z, cost);
+            }
+        }
+
+        return points_with_costs;
+    }
+
+    std::vector<float> combinePointcloudWithNormals(const std::vector<float>& pointcloud_rover, const std::vector<float>& normals_rover,
+                                                     uint32_t width, uint32_t height)
+    {
+        // Ensure pointcloud size matches normals size
+        if (sync_pointcloud_->width != width || sync_pointcloud_->height != height)
+        {
+            RCLCPP_ERROR(this->get_logger(), 
+                         "Size mismatch! Normals: %dx%d, Pointcloud: %dx%d",
+                         width, height, 
+                         sync_pointcloud_->width, sync_pointcloud_->height);
+            return std::vector<float>();
+        }
+        
+        size_t num_pixels = width * height;
+        std::vector<float> points_with_normals(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
+        
+        int points_beyond_max_distance = 0;
+        
+        // Iterate through each point
+        for (size_t i = 0; i < num_pixels; ++i)
+        {
+            float x = pointcloud_rover[i * 3 + 0];
+            float y = pointcloud_rover[i * 3 + 1];
+            float z = pointcloud_rover[i * 3 + 2];
+            
+            // Get corresponding normal vector from normals_rover
+            float nx = normals_rover[i * 3 + 0];
+            float ny = normals_rover[i * 3 + 1];
+            float nz = normals_rover[i * 3 + 2];
+            
+            // Set normals to [0, 0, 0] if z (depth) exceeds max_distance
+            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
+            {
+                nx = 0.0f;
+                ny = 0.0f;
+                nz = 0.0f;
+                points_beyond_max_distance++;
+            }
+            
+            // Store combined data: [x, y, z, nx, ny, nz]
+            points_with_normals[i * 6 + 0] = x;
+            points_with_normals[i * 6 + 1] = y;
+            points_with_normals[i * 6 + 2] = z;
+            points_with_normals[i * 6 + 3] = nx;
+            points_with_normals[i * 6 + 4] = ny;
+            points_with_normals[i * 6 + 5] = nz;
+        }
+
+        RCLCPP_DEBUG(this->get_logger(), 
+                     "Set normals to [0,0,0] for %d/%zu points beyond max_distance (%.2fm)",
+                     points_beyond_max_distance, num_pixels, max_distance_);
+        
+        
+        return points_with_normals;
+    }
+
+    // - - - - - - - - - - - Cost Map Functions - - - - - - - - - - -
+
+    std::vector<float> combineCostMaps(
+    const std::vector<float>& sne_costmap,  const std::vector<float>& seg_costmap)
+    {
+        // Ensure both costmaps have the same dimensions
+        if (sne_costmap.size() != seg_costmap.size())
+        {
+            RCLCPP_ERROR(this->get_logger(), 
+                         "Costmap size mismatch! SNE size: %zu, Segmentation size: %zu",
+                         sne_costmap.size(), seg_costmap.size());
+            return std::vector<float>();
+        }
+
+        size_t num_cells = sne_costmap.size();
+        std::vector<float> combined_costmap(num_cells);
+
+        // Combine costmaps by taking the maximum cost at each cell
+        for (size_t i = 0; i < num_cells; ++i)
+        {
+           combined_costmap[i] = (sne_costmap[i]+ seg_costmap[i]) / 2.0f;
+        }
+
+        return combined_costmap;
+    }
+
     costMapMetrics getCostMapMetrics(double fov_horizontal, double fov_vertical, double camera_height, double camera_pitch, double max_ray_length) {
         // Handle when camera is below ground level, handle when max_ray_length is less than camera height
         if (camera_height < 0.0 || max_ray_length <= camera_height) {
@@ -413,37 +941,173 @@ private:
         
         return rover_metrics;
     }
-
     
-    void decodeMask(const sensor_msgs::msg::Image::SharedPtr encoded_mask,
-                    std::vector<uint8_t>& class_ids,
-                    std::vector<float>& confidences)
+    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs, const costMapMetrics& costmap_metrics_)
     {
-        uint32_t width = encoded_mask->width;
-        uint32_t height = encoded_mask->height;
-        size_t num_pixels = width * height;
+        double origin_x = costmap_metrics_.origin[0];
+        double origin_y = costmap_metrics_.origin[1];
+        double costmap_height = costmap_metrics_.size[0];
+        double costmap_width = costmap_metrics_.size[1];
+
+        // Convert to number of cells (round up)
+        uint32_t width_cells = static_cast<uint32_t>(std::ceil(costmap_width / internal_resolution_));
+        uint32_t height_cells = static_cast<uint32_t>(std::ceil(costmap_height / internal_resolution_));
+
+        size_t num_cells = static_cast<size_t>(width_cells) * static_cast<size_t>(height_cells);
+
+        // Accumulators for sum and count per cell
+        std::vector<double> sum(num_cells, 0.0);
+        std::vector<uint32_t> count(num_cells, 0);
+
+        // Bin points into cells
+        int points_binned = 0;
+        int points_out_of_bounds = 0;
+        int points_invalid = 0;
         
-        class_ids.resize(num_pixels);
-        confidences.resize(num_pixels);
-        
-        // Get pointer to data
-        const uint16_t* encoded_ptr = reinterpret_cast<const uint16_t*>(encoded_mask->data.data());
-        
-        // Decode each pixel
-        for (size_t i = 0; i < num_pixels; ++i)
+        for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
         {
-            uint16_t encoded_value = encoded_ptr[i];
-            
-            // Extract upper 8 bits for class_id
-            class_ids[i] = static_cast<uint8_t>(encoded_value >> 8);
-            
-            // Extract lower 8 bits for confidence and normalize to 0.0-1.0
-            uint8_t confidence_byte = static_cast<uint8_t>(encoded_value & 0xFF);
-            confidences[i] = confidence_byte / 255.0f;
+            float x = points_with_costs[i + 0];
+            float y = points_with_costs[i + 1];
+            float cost = points_with_costs[i + 3];
+
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(cost))
+            {
+                points_invalid++;
+                continue; // skip invalid
+            }
+
+            int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
+            int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
+
+            size_t u = i % 640;  // Column (x coordinate in image)
+            size_t v = i / 640;  // Row (y coordinate in image)
+
+            if (u == 320 && v == 240) {
+                RCLCPP_INFO(this->get_logger(), 
+                        "Ix, Iy: (%d, %d)", ix, iy);
+            }
+
+            if (ix < 0 || iy < 0) {
+                points_out_of_bounds++;
+                continue;
+            }
+            if (static_cast<uint32_t>(ix) >= height_cells || static_cast<uint32_t>(iy) >= width_cells) {
+                points_out_of_bounds++;
+                continue;
+            }
+
+            size_t cell_idx = static_cast<size_t>(ix) * static_cast<size_t>(width_cells) + static_cast<size_t>(iy);
+            sum[cell_idx] += static_cast<double>(cost);
+            count[cell_idx] += 1;
+            points_binned++;
         }
         
-        RCLCPP_DEBUG(this->get_logger(), "Decoded segmentation mask: %zu pixels", num_pixels);
+        RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
+                    points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
+
+        // Compute averages
+        std::vector<float> avg(num_cells, 255.0f);  // Default to 255 for empty cells
+        for (size_t ci = 0; ci < num_cells; ++ci)
+        {
+            if (count[ci] > 0)
+            {
+                avg[ci] = static_cast<float>(sum[ci] / static_cast<double>(count[ci]));
+                //RCLCPP_INFO(this->get_logger(), "Averaged cost cell: %.2f", avg[ci]);
+            }
+            // otherwise leave as 255
+        }
+        
+
+        return std::make_tuple(std::move(avg), width_cells, height_cells, origin_x, origin_y);
     }
+
+    std::tuple<std::vector<float>, uint32_t, uint32_t> downscaleCostGrid(
+    const std::vector<float>& cost_grid, 
+    uint32_t original_width, 
+    uint32_t original_height,
+    float original_resolution,  // Current resolution (e.g., 0.01 m/cell)
+    float target_resolution)    // Desired resolution (e.g., 0.05 m/cell)
+    {
+        // Calculate downscale factor
+        float scale_ratio = target_resolution / original_resolution;
+        
+        if (scale_ratio < 1.0f)
+        {
+            RCLCPP_WARN(this->get_logger(), 
+                        "Target resolution %.3f is smaller than original %.3f. No downscaling needed.",
+                        target_resolution, original_resolution);
+            return std::make_tuple(cost_grid, original_width, original_height);
+        }
+        
+        uint32_t downscale_factor = static_cast<uint32_t>(std::round(scale_ratio));
+        
+        // Calculate new dimensions
+        uint32_t new_width = original_width / downscale_factor;
+        uint32_t new_height = original_height / downscale_factor;
+        
+        if (new_width == 0 || new_height == 0)
+        {
+            RCLCPP_ERROR(this->get_logger(), 
+                        "Downscale factor %d too large for grid size %dx%d",
+                        downscale_factor, original_width, original_height);
+            return std::make_tuple(std::vector<float>(), 0, 0);
+        }
+        
+        std::vector<float> downscaled_grid(new_width * new_height, 255.0f); // Initialize with 255 (unknown)
+        
+        RCLCPP_INFO(this->get_logger(), 
+                    "Downscaling costmap from %dx%d (%.3fm) to %dx%d (%.3fm) with factor %d",
+                    original_width, original_height, original_resolution,
+                    new_width, new_height, target_resolution, downscale_factor);
+        
+        // Downsample by averaging blocks
+        for (uint32_t y = 0; y < new_height; ++y)
+        {
+            for (uint32_t x = 0; x < new_width; ++x)
+            {
+                float sum = 0.0f;
+                uint32_t count = 0;
+                float max_cost = 0.0f;  // Track maximum cost in block
+                
+                // Average over the downscale_factor x downscale_factor block
+                for (uint32_t dy = 0; dy < downscale_factor; ++dy)
+                {
+                    for (uint32_t dx = 0; dx < downscale_factor; ++dx)
+                    {
+                        uint32_t orig_x = x * downscale_factor + dx;
+                        uint32_t orig_y = y * downscale_factor + dy;
+                        
+                        // Bounds check
+                        if (orig_x >= original_width || orig_y >= original_height)
+                            continue;
+                        
+                        size_t orig_idx = orig_y * original_width + orig_x;
+                        float cost = cost_grid[orig_idx];
+                        
+                        if (cost < 255.0f) // Only consider known costs
+                        {
+                            sum += cost;
+                            count++;
+                            max_cost = std::max(max_cost, cost);
+                        }
+                    }
+                }
+                
+                size_t new_idx = y * new_width + x;
+                
+                if (count > 0)
+                {
+                    downscaled_grid[new_idx] = sum / static_cast<float>(count);
+
+                }
+                // else remains 255.0f (unknown)
+            }
+        }
+        
+        return std::make_tuple(std::move(downscaled_grid), new_width, new_height);
+    }
+
+    // - - - - - - - - - - - General functions - - - - - - - - - - -
 
     std::vector<float> pointcloudToVector()
     {
@@ -471,7 +1135,6 @@ private:
 
         return points;
     }
-
 
     std::vector<float> transformToRoverFrame(const std::vector<float>& points, 
                                               uint32_t width, uint32_t height, bool normals)
@@ -533,358 +1196,46 @@ private:
         return points_transformed;
     }
 
-    std::vector<float> combinePointcloudWithSegmentation(
-        std::vector<float> pointcloud_rover,
-        const std::vector<uint8_t>& class_ids,
-        const std::vector<float>& confidences,
-        uint32_t width, uint32_t height)
-    {        
-        size_t num_pixels = width * height;
-        std::vector<float> points_with_segmentation(num_pixels * 5); // 5 values per point: x, y, z, class_id, confidence
-        
-        int points_beyond_max_distance = 0;
-        
-        // Iterate through each point
-        for (size_t i = 0; i < num_pixels; ++i)
-        {
-            float x = pointcloud_rover[i * 3 + 0];
-            float y = pointcloud_rover[i * 3 + 1];
-            float z = pointcloud_rover[i * 3 + 2];
-            
-            // Get corresponding segmentation data
-            float class_id = static_cast<float>(class_ids[i]);
-            float confidence = confidences[i];
-            
-            // Set confidence to 0 if z (depth) exceeds max_distance or is invalid
-            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
-            {
-                confidence = 0.0f;
-                points_beyond_max_distance++;
-            }
-            
-            // Store combined data: [x, y, z, class_id, confidence]
-            points_with_segmentation[i * 5 + 0] = x;
-            points_with_segmentation[i * 5 + 1] = y;
-            points_with_segmentation[i * 5 + 2] = z;
-            points_with_segmentation[i * 5 + 3] = class_id;
-            points_with_segmentation[i * 5 + 4] = confidence;
-        }
-        
-        return points_with_segmentation;
-    }
+ 
+    // - - - - - - - - - - - Publishers Functions - - - - - - - - - - -
 
-    std::vector<float> combinePointcloudWithNormals(const std::vector<float>& pointcloud_rover, const std::vector<float>& normals_rover,
-                                                     uint32_t width, uint32_t height)
+    void publishCosts(const std::vector<float>& traversability_costs)
     {
-        // Ensure pointcloud size matches normals size
-        if (sync_pointcloud_->width != width || sync_pointcloud_->height != height)
+        // traversability_costs format: [x, y, z, cost] for each point
+        // We need to reconstruct the image with costs in their original pixel positions
+        
+        size_t num_points = traversability_costs.size() / 4;
+        
+        // Assume standard camera resolution (you may want to pass width/height as parameters)
+        uint32_t width = sync_pointcloud_->width;
+        uint32_t height = sync_pointcloud_->height;
+        
+        // Create image message
+        auto cost_image_msg = sensor_msgs::msg::Image();
+        cost_image_msg.header.stamp = this->now();
+        cost_image_msg.header.frame_id = "camera_frame";
+        cost_image_msg.height = height;
+        cost_image_msg.width = width;
+        cost_image_msg.encoding = "32FC1";  // Single channel 32-bit float
+        cost_image_msg.is_bigendian = false;
+        cost_image_msg.step = width * sizeof(float);
+        
+        // Allocate data
+        cost_image_msg.data.resize(width * height * sizeof(float));
+        float* cost_data = reinterpret_cast<float*>(cost_image_msg.data.data());
+        
+        // Fill the image with cost values
+        for (size_t i = 0; i < num_points; ++i)
         {
-            RCLCPP_ERROR(this->get_logger(), 
-                         "Size mismatch! Normals: %dx%d, Pointcloud: %dx%d",
-                         width, height, 
-                         sync_pointcloud_->width, sync_pointcloud_->height);
-            return std::vector<float>();
+            float cost = traversability_costs[i * 4 + 3];  // Extract cost from [x, y, z, cost]
+            cost_data[i] = cost;
         }
         
-        size_t num_pixels = width * height;
-        std::vector<float> points_with_normals(num_pixels * 6); // 6 values per point: x, y, z, nx, ny, nz
+        // Publish the cost image
+        cost_image_pub_->publish(cost_image_msg);
         
-        int points_beyond_max_distance = 0;
-        
-        // Iterate through each point
-        for (size_t i = 0; i < num_pixels; ++i)
-        {
-            float x = pointcloud_rover[i * 3 + 0];
-            float y = pointcloud_rover[i * 3 + 1];
-            float z = pointcloud_rover[i * 3 + 2];
-            
-            // Get corresponding normal vector from normals_rover
-            float nx = normals_rover[i * 3 + 0];
-            float ny = normals_rover[i * 3 + 1];
-            float nz = normals_rover[i * 3 + 2];
-            
-            // Set normals to [0, 0, 0] if z (depth) exceeds max_distance
-            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
-            {
-                nx = 0.0f;
-                ny = 0.0f;
-                nz = 0.0f;
-                points_beyond_max_distance++;
-            }
-            
-            // Store combined data: [x, y, z, nx, ny, nz]
-            points_with_normals[i * 6 + 0] = x;
-            points_with_normals[i * 6 + 1] = y;
-            points_with_normals[i * 6 + 2] = z;
-            points_with_normals[i * 6 + 3] = nx;
-            points_with_normals[i * 6 + 4] = ny;
-            points_with_normals[i * 6 + 5] = nz;
-        }
-
-        RCLCPP_DEBUG(this->get_logger(), 
-                     "Set normals to [0,0,0] for %d/%zu points beyond max_distance (%.2fm)",
-                     points_beyond_max_distance, num_pixels, max_distance_);
-        
-        
-        return points_with_normals;
-    }
-    
-    std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_rover, 
-                                                    uint32_t width, uint32_t height)
-    {
-        size_t num_pixels = width * height;
-        std::vector<float> points_with_theta_rover(num_pixels * 4); // 4 values per point: x, y, z, theta
-        
-        // Compute polar angle for each point's normal vector
-        for (size_t i = 0; i < num_pixels; ++i)
-        {
-            // Extract point coordinates in rover frame
-            float x_rover = points_with_normals_rover[i * 6 + 0];
-            float y_rover = points_with_normals_rover[i * 6 + 1];
-            float z_rover = points_with_normals_rover[i * 6 + 2];
-            
-            // Extract normal vector components in rover frame
-            float nx_rover = points_with_normals_rover[i * 6 + 3];
-            float ny_rover = points_with_normals_rover[i * 6 + 4];
-            float nz_rover = points_with_normals_rover[i * 6 + 5];
-            
-            // Compute polar angle θ (theta) using arctan formula
-            // θ = arctan(√(nx² + ny²) / nz)
-            float xy_magnitude = std::sqrt(nx_rover * nx_rover + ny_rover * ny_rover);
-            float theta = std::atan2(xy_magnitude, nz_rover);
-            
-            // Store combined data: [x, y, z, theta] in rover frame
-            points_with_theta_rover[i * 4 + 0] = x_rover;
-            points_with_theta_rover[i * 4 + 1] = y_rover;
-            points_with_theta_rover[i * 4 + 2] = z_rover;
-            points_with_theta_rover[i * 4 + 3] = theta;
-        }
-        
-        // Print theta for pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            RCLCPP_INFO(this->get_logger(), "Theta values for pixels at row 283, columns 36-38:");
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_theta_rover[idx * 4 + 0];
-                float y = points_with_theta_rover[idx * 4 + 1];
-                float z = points_with_theta_rover[idx * 4 + 2];
-                float theta = points_with_theta_rover[idx * 4 + 3];
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f theta=%.6f", 
-                           idx, u, v, x, y, z, theta);
-            }
-        }
-
-        return points_with_theta_rover;
-    }
-
-    std::vector<float> computeSegmentationTraversabilityCost(std::vector<float> points_with_segmentation,
-                                                  uint32_t width, uint32_t height)
-    {
-        size_t num_pixels = width * height;
-        std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
-        
-        // Compute cost for each point
-        // Cost function: C = C_risk * certainty * 255, where C in range [0, 255]
-        for (size_t i = 0; i < num_pixels; ++i)
-        {
-            // Extract point data
-            float x = points_with_segmentation[i * 5 + 0];
-            float y = points_with_segmentation[i * 5 + 1];
-            float z = points_with_segmentation[i * 5 + 2];
-            uint8_t class_id = static_cast<uint8_t>(points_with_segmentation[i * 5 + 3]);
-            float confidence = points_with_segmentation[i * 5 + 4];
-
-            float cost;
-            
-            // If confidence is 0 (invalid point), set cost to 255 (unknown/obstacle)
-            if (confidence <= 0.0f)
-            {
-                cost = 255.0f;
-            }
-            else if (class_id == 255) // Unknown class
-            {
-                cost = 255.0f;
-            }
-            else
-            {
-
-                // Get risk value for this class
-                float risk = 0.5f;          // Default risk if class not found
-                auto it = risk_params_.find(class_id);
-                if (it != risk_params_.end())
-                {
-                    risk = it->second;
-                }
-
-                // Compute cost: C = risk * confidence * 255
-                
-                float x = risk * confidence;
-                const float a = 15.0f; // steepness
-                const float b = 0.3f;  // midpoint
-                float sigmoid = 1.0f / (1.0f + std::exp(-a * (x - b)));
-                cost = sigmoid * 255.0f;
-            
-                // Clamp to valid range
-                cost = std::clamp(cost, 0.0f, 255.0f);
-            }
-            
-           
-            // Store: [x, y, z, cost]
-            points_with_costs[i * 4 + 0] = x;
-            points_with_costs[i * 4 + 1] = y;
-            points_with_costs[i * 4 + 2] = z;
-            points_with_costs[i * 4 + 3] = cost;
-        }
-        
-        RCLCPP_DEBUG(this->get_logger(), "Computed traversability costs for %zu points", num_pixels);
-
-
-
-        return points_with_costs;
-    }
-    
-    std::vector<float> computeSNETraversabilityCost(const std::vector<float>& points_with_theta_rover,
-                                                  uint32_t width, uint32_t height)
-    {
-        // Create output vector for points with traversability costs
-        // Format: [x, y, z, cost] for each point
-        size_t num_pixels = width * height;
-        std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
-        
-        // Cost function: C = -13.857 * exp(theta) + 320.68
-        const float exponential_coefficient = 13.857f;
-        const float added_coefficient = 320.68f;
-        
-        // Compute cost for each point
-        for (size_t i = 0; i < num_pixels; ++i)
-        {
-            // Get point coordinates from the points_with_theta_rover vector
-            // Input format: [x, y, z, theta] per point
-            float x_rover = points_with_theta_rover[i * 4 + 0];
-            float y_rover = points_with_theta_rover[i * 4 + 1];
-            float z_rover = points_with_theta_rover[i * 4 + 2];
-            float theta = points_with_theta_rover[i * 4 + 3];
-            
-            // Compute cost
-            float cost;
-            if (std::isnan(theta) || theta == 0.0f)
-            {
-                cost = 255.0f;
-            }
-            else
-            {
-                // Compute cost: C = -13.857 * exp(theta) + 320.68 (theta in radians)
-                cost = -exponential_coefficient * std::exp(theta) + added_coefficient;
-            }
-            
-            // Store combined data: [x, y, z, cost] in rover frame
-            points_with_costs[i * 4 + 0] = x_rover;
-            points_with_costs[i * 4 + 1] = y_rover;
-            points_with_costs[i * 4 + 2] = z_rover;
-            points_with_costs[i * 4 + 3] = cost;
-        }
-        
-        // Print cost for pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            RCLCPP_INFO(this->get_logger(), "Cost values for pixels at row 283, columns 36-38:");
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_costs[idx * 4 + 0];
-                float y = points_with_costs[idx * 4 + 1];
-                float z = points_with_costs[idx * 4 + 2];
-                float cost = points_with_costs[idx * 4 + 3];
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f cost=%.6f", 
-                           idx, u, v, x, y, z, cost);
-            }
-        }
-
-        return points_with_costs;
-    }
-
-    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs, const costMapMetrics& costmap_metrics_)
-    {
-        double origin_x = costmap_metrics_.origin[0];
-        double origin_y = costmap_metrics_.origin[1];
-        double costmap_height = costmap_metrics_.size[0];
-        double costmap_width = costmap_metrics_.size[1];
-
-        // Convert to number of cells (round up)
-        uint32_t width_cells = static_cast<uint32_t>(std::ceil(costmap_width / resolution_));
-        uint32_t height_cells = static_cast<uint32_t>(std::ceil(costmap_height / resolution_));
-
-        size_t num_cells = static_cast<size_t>(width_cells) * static_cast<size_t>(height_cells);
-
-        // Accumulators for sum and count per cell
-        std::vector<double> sum(num_cells, 0.0);
-        std::vector<uint32_t> count(num_cells, 0);
-
-        // Bin points into cells
-        int points_binned = 0;
-        int points_out_of_bounds = 0;
-        int points_invalid = 0;
-        
-        for (size_t i = 0; i + 3 < points_with_costs.size(); i += 4)
-        {
-            float x = points_with_costs[i + 0];
-            float y = points_with_costs[i + 1];
-            float cost = points_with_costs[i + 3];
-
-            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(cost))
-            {
-                points_invalid++;
-                continue; // skip invalid
-            }
-
-            int ix = static_cast<int>(std::floor((x - origin_x) / resolution_));
-            int iy = static_cast<int>(std::floor(-(y - origin_y) / resolution_));
-
-            size_t u = i % 640;  // Column (x coordinate in image)
-            size_t v = i / 640;  // Row (y coordinate in image)
-
-            if (u == 320 && v == 240) {
-                RCLCPP_INFO(this->get_logger(), 
-                        "Ix, Iy: (%d, %d)", ix, iy);
-            }
-
-            if (ix < 0 || iy < 0) {
-                points_out_of_bounds++;
-                continue;
-            }
-            if (static_cast<uint32_t>(ix) >= height_cells || static_cast<uint32_t>(iy) >= width_cells) {
-                points_out_of_bounds++;
-                continue;
-            }
-
-            size_t cell_idx = static_cast<size_t>(ix) * static_cast<size_t>(width_cells) + static_cast<size_t>(iy);
-            sum[cell_idx] += static_cast<double>(cost);
-            count[cell_idx] += 1;
-            points_binned++;
-        }
-        
-        RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
-                    points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
-
-        // Compute averages
-        std::vector<float> avg(num_cells, 255.0f);  // Default to 255 for empty cells
-        for (size_t ci = 0; ci < num_cells; ++ci)
-        {
-            if (count[ci] > 0)
-            {
-                avg[ci] = static_cast<float>(sum[ci] / static_cast<double>(count[ci]));
-                //RCLCPP_INFO(this->get_logger(), "Averaged cost cell: %.2f", avg[ci]);
-            }
-            // otherwise leave as 255
-        }
-        
-
-        return std::make_tuple(std::move(avg), width_cells, height_cells, origin_x, origin_y);
-    }
+        RCLCPP_DEBUG(this->get_logger(), "Published cost image with %dx%d pixels", width, height);
+    }   
 
     void publishSegmentationCostmap(const std::vector<float>& averaged_grid, 
                         uint32_t width_cells, uint32_t height_cells, 
@@ -901,7 +1252,7 @@ private:
         // Set metadata
         costmap_msg.metadata.size_x = width_cells;
         costmap_msg.metadata.size_y = height_cells;
-        costmap_msg.metadata.resolution = resolution_;
+        costmap_msg.metadata.resolution = output_resolution_;
 
         // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
@@ -942,7 +1293,7 @@ private:
         grid_msg.header.frame_id = "map";  //  rover frame
         
         // Set metadata
-        grid_msg.info.resolution = resolution_;
+        grid_msg.info.resolution = output_resolution_;
         grid_msg.info.width = width_cells;
         grid_msg.info.height = height_cells;
 
@@ -988,7 +1339,7 @@ private:
         // Set metadata
         costmap_msg.metadata.size_x = height_cells;
         costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = resolution_;
+        costmap_msg.metadata.resolution = output_resolution_;
         
         // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
@@ -1047,7 +1398,7 @@ private:
         // Set metadata
         viz_msg.info.width = width_cells;
         viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = resolution_;
+        viz_msg.info.resolution = output_resolution_;
         
         // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
@@ -1070,21 +1421,14 @@ private:
         {
             float cost = averaged_grid[i];
             
-            if (cost >= 255.0f)
+            if (averaged_grid[i] >= 255.0f)
             {
-                // Maximum cost or unknown
-                viz_msg.data[i] = 100;
-            }
-            else if (cost <= 0.0f)
-            {
-                // Free space
-                viz_msg.data[i] = 0;
+                viz_msg.data[i] = -1; // Unknown
             }
             else
             {
-                // Scale 0-255 to 0-100
-                int8_t occupancy = static_cast<int8_t>((cost / 255.0f) * 100.0f);
-                viz_msg.data[i] = occupancy;
+                // Scale from 0-255 to 0-100
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
             }
         }
         
@@ -1123,6 +1467,11 @@ private:
     std::vector<uint8_t> class_ids_;
     std::vector<float> confidences_;
 
+    int dilation_kernel_size_;
+    float dilation_min_confidence_;
+    bool dilation_enabled_;
+
+
     // Camera to rover transformation
     tf2::Transform cam_x_to_rover_transform_;
 
@@ -1141,7 +1490,8 @@ private:
     double rover_length_;
     
     // Costmap parameters
-    double resolution_;
+    double internal_resolution_;
+    double output_resolution_;
 
     // Risk parameters for different segmentation classes
     std::map<std::string, double> class_risk_map_;  // Map class names to risks

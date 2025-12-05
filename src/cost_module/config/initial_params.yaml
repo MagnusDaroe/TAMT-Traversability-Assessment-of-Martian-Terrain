@@ -1,11 +1,11 @@
-costmap_sne:
+/tamt/costmap_module:
   ros__parameters:
     #! Camera parameters
     camera:
       tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
       fov_x: 110.0  # Field of view in X direction (degrees) Horizontal
       fov_y: 70.0  # Field of view in Y direction (degrees) Vertical
-      max_distance: 7.0  # Maximum sensing distance (meters)
+      max_distance: 2.5  # Maximum sensing distance (meters)
       height: 0.43  # Camera height from ground (meters)
       
       # Static transform from rover frame to camera frame
@@ -27,7 +27,8 @@ costmap_sne:
     
     #! Costmap parameters
     costmap:
-      resolution: 0.01  # Costmap resolution (meters per cell)
+      internal_resolution: 0.01  # Internal costmap resolution (meters per cell)
+      output_resolution: 0.05  # Costmap resolution (meters per cell)
     
     #! Class risk parameters
     class_risks:

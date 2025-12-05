@@ -16,6 +16,7 @@ def generate_launch_description():
         package='terrain_segmentation',
         executable='segment.py',
         name='terrain_segmentation_node',
+        namespace='tamt',
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
@@ -25,6 +26,7 @@ def generate_launch_description():
         package='surface_normal_estimator',
         executable='surface_normal_estimator',
         name='surface_normal_estimator',
+        namespace='tamt',
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
@@ -33,7 +35,8 @@ def generate_launch_description():
     costmap_sne = Node(
         package='cost_module',
         executable='costmap_sne',
-        name='costmap_sne',
+        name='costmap_module',
+        namespace='tamt',
         parameters=[config_file],
         output='screen'
     )
@@ -47,6 +50,7 @@ def generate_launch_description():
         package='sync_pkg',
         executable='data_synchroniser',
         name='data_synchroniser',
+        namespace='tamt',
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
