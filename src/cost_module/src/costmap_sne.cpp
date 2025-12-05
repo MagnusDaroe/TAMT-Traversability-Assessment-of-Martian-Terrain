@@ -39,10 +39,13 @@ public:
         this->declare_parameter("costmap.output_resolution", 0.05);
         
         //! Need params for dilation 
-        dilation_kernel_size_ = 3;
-        dilation_min_confidence_ = 0.7;
-        dilation_enabled_ = true;
-        
+        this->declare_parameter("costmap.segmentation.dilation_enabled", false);
+        this->declare_parameter("costmap.segmentation.dilation_kernel_size", 3);
+        this->declare_parameter("costmap.segmentation.dilation_min_confidence", 0.7);
+
+        dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
+        dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
+        dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
 
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
