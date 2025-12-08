@@ -16,6 +16,7 @@ find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(OpenCV REQUIRED)
 
 
 if(BUILD_TESTING)
@@ -32,7 +33,7 @@ endif()
 
 # Include directories
 include_directories(include)
-#include_directories(${OpenCV_INCLUDE_DIRS})
+include_directories(${OpenCV_INCLUDE_DIRS})
 
 # Create the costmap_sne executable
 add_executable(costmap_sne 
@@ -49,6 +50,8 @@ ament_target_dependencies(costmap_sne
   tf2
   tf2_geometry_msgs
 )
+
+target_link_libraries(costmap_sne ${OpenCV_LIBS})
 
 # Install C++ executables
 install(TARGETS

@@ -2,7 +2,7 @@
   ros__parameters:
     #! Camera parameters
     camera:
-      tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
+      tilt_angle: -20.0  # Camera tilt angle from horizontal (degrees)
       fov_x: 110.0  # Field of view in X direction (degrees) Horizontal
       fov_y: 70.0  # Field of view in Y direction (degrees) Vertical
       max_distance: 5.5  # Maximum sensing distance (meters)

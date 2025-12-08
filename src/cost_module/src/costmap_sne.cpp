@@ -6,6 +6,7 @@
 #include <tf2/LinearMath/Transform.h>
 #include <nav2_msgs/msg/costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <opencv2/opencv.hpp>
 #include <tuple>
 #include <algorithm>
 #include <cmath>
@@ -111,7 +112,6 @@ public:
         risk_params_[4] = class_risk_map_["hole"];
         risk_params_[255] = class_risk_map_["unknown"];  // Unknown class
         hole_id_ = 4;
-        
 
         // Subscribe to synchronized pointcloud topic
         pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -193,6 +193,22 @@ public:
         costmap_metrics_ = getCostMapMetricsRoverFrame(getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_), cam_x_to_rover_transform_, camera_height_);
                 
         RCLCPP_INFO(this->get_logger(), "Costmaps node initialized");
+
+
+                
+        // After setting up cam_x_to_rover_transform_ in constructor:
+        tf2::Vector3 cam_origin = cam_x_to_rover_transform_.getOrigin();
+        RCLCPP_INFO(this->get_logger(), 
+                    "Camera origin in rover frame: x=%.3f, y=%.3f, z=%.3f", 
+                    cam_origin.x(), cam_origin.y(), cam_origin.z());
+
+        // Also print what the transform does to a forward ray
+        tf2::Vector3 forward_ray_cam(0, 0, 1);  // Forward in camera
+        tf2::Vector3 forward_ray_rover = cam_x_to_rover_transform_.getBasis() * forward_ray_cam;
+        RCLCPP_INFO(this->get_logger(), 
+                    "Forward camera ray (0,0,1) transforms to rover frame: x=%.3f, y=%.3f, z=%.3f", 
+                    forward_ray_rover.x(), forward_ray_rover.y(), forward_ray_rover.z());
+
     }
 
 private:
@@ -236,7 +252,7 @@ private:
 
             if (seg_costmap.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping dilation");
+                RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping processing");
                 return;
             }
 
@@ -251,11 +267,22 @@ private:
                 
                 RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
             }
+
+            // Fill holes with convex hull approach - FIXED CALL
+            dilated_costmap = fillHolesWithConvexHull(
+                dilated_costmap,        // existing costmap
+                pointcloud_rover,       // 3D points
+                class_ids_,            // segmentation classes
+                confidences_,          // segmentation confidence
+                segmentation_width_,   // image width
+                segmentation_height_,  // image height
+                seg_width_cells,       // costmap width
+                seg_height_cells,      // costmap height
+                seg_origin_x,          // costmap origin x
+                seg_origin_y);         // costmap origin y
         
             // Publish final segmentation costmap
             publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
-
-            
 
             // Combine Cost maps
             std::vector<float> combined_costmap = combineCostMaps(sne_costmap, dilated_costmap);
@@ -423,6 +450,196 @@ private:
 
         return std::make_tuple(std::move(class_map), std::move(confidence_map));
     }
+
+    std::vector<float> fillHolesWithConvexHull(
+    const std::vector<float>& costmap,
+    const std::vector<float>& pointcloud_rover,
+    const std::vector<uint8_t>& class_ids,
+    const std::vector<float>& confidences,
+    uint32_t image_width, 
+    uint32_t image_height,
+    uint32_t costmap_width,
+    uint32_t costmap_height,
+    float origin_x,
+    float origin_y)
+    {
+        // Step 1: Find hole mask in image space
+        cv::Mat hole_mask_image(image_height, image_width, CV_8UC1, cv::Scalar(0));
+        
+        for (uint32_t v = 0; v < image_height; ++v)
+        {
+            for (uint32_t u = 0; u < image_width; ++u)
+            {
+                size_t idx = v * image_width + u;
+                if (class_ids[idx] == hole_id_ && confidences[idx] > 0.3f)
+                {
+                    hole_mask_image.at<uint8_t>(v, u) = 255;
+                }
+            }
+        }
+        
+        // Step 2: Find contours in image space
+        std::vector<std::vector<cv::Point>> contours_image;
+        cv::findContours(hole_mask_image, contours_image, cv::RETR_EXTERNAL, 
+                        cv::CHAIN_APPROX_SIMPLE);
+        
+        RCLCPP_INFO(this->get_logger(), "Found %zu hole(s) in image space", 
+                    contours_image.size());
+        
+        std::vector<float> filled_costmap = costmap;
+        float hole_cost = std::min(254.0f, risk_params_[hole_id_] * 255.0f);
+        
+        // Step 3: Process each hole
+        for (size_t hole_idx = 0; hole_idx < contours_image.size(); ++hole_idx)
+        {
+            const auto& contour_image = contours_image[hole_idx];
+            double area = cv::contourArea(contour_image);
+            
+            if (area < 100.0)  // Skip small holes
+            {
+                continue;
+            }
+            
+            // Step 4: Get ALL hole pixels for this contour (not just contour boundary)
+            cv::Mat hole_region_mask = cv::Mat::zeros(image_height, image_width, CV_8UC1);
+            std::vector<std::vector<cv::Point>> single_contour = {contour_image};
+            cv::drawContours(hole_region_mask, single_contour, 0, cv::Scalar(255), cv::FILLED);
+            
+            // Step 5: Project ALL hole pixels to costmap coordinates
+            std::vector<cv::Point> costmap_points;
+            
+            for (uint32_t v = 0; v < image_height; ++v)
+            {
+                for (uint32_t u = 0; u < image_width; ++u)
+                {
+                    // Only process pixels marked as this hole
+                    if (hole_region_mask.at<uint8_t>(v, u) == 0)
+                        continue;
+                    
+                    // Get 3D coordinates
+                    size_t pc_idx = v * image_width + u;
+                    float x = pointcloud_rover[pc_idx * 3 + 0];
+                    float y = pointcloud_rover[pc_idx * 3 + 1];
+                    float z = pointcloud_rover[pc_idx * 3 + 2];
+                    
+                    // Skip invalid points
+                    if (!std::isfinite(x) || !std::isfinite(y) || z <= 0.0f)
+                        continue;
+                    
+                    // Project to costmap coordinates
+                    int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
+                    int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
+                    
+                    // Check bounds
+                    if (ix >= 0 && iy >= 0 && 
+                        static_cast<uint32_t>(ix) < costmap_height && 
+                        static_cast<uint32_t>(iy) < costmap_width)
+                    {
+                        costmap_points.push_back(cv::Point(iy, ix));  // Note: OpenCV Point(x, y) = (col, row)
+                    }
+                }
+            }
+            
+            if (costmap_points.size() < 3)
+            {
+                RCLCPP_WARN(this->get_logger(), 
+                        "Hole %zu: insufficient costmap points (%zu), skipping", 
+                        hole_idx, costmap_points.size());
+                continue;
+            }
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hole %zu: projected %zu pixels to costmap", 
+                    hole_idx, costmap_points.size());
+            
+            // Step 6: Compute convex hull in COSTMAP space
+            std::vector<cv::Point> hull_costmap;
+            cv::convexHull(costmap_points, hull_costmap);
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hole %zu: convex hull has %zu points in costmap space", 
+                    hole_idx, hull_costmap.size());
+            
+            // Step 7: Create fill mask and validate
+            cv::Mat fill_mask = cv::Mat::zeros(costmap_height, costmap_width, CV_8UC1);
+            cv::fillConvexPoly(fill_mask, hull_costmap, cv::Scalar(255));
+            
+            // Step 8: Validate - count what's in the hull
+            int total_cells = 0;
+            int hole_cells = 0;
+            int other_cells = 0;
+            
+            // Create a set of original projected points for fast lookup
+            std::set<std::pair<int, int>> hole_point_set;
+            for (const auto& pt : costmap_points)
+            {
+                hole_point_set.insert({pt.y, pt.x});  // Store as (row, col)
+            }
+            
+            for (uint32_t y = 0; y < costmap_height; ++y)
+            {
+                for (uint32_t x = 0; x < costmap_width; ++x)
+                {
+                    if (fill_mask.at<uint8_t>(y, x) == 0)
+                        continue;
+                    
+                    total_cells++;
+                    
+                    // Check if this cell was part of the original hole projection
+                    if (hole_point_set.count({y, x}))
+                    {
+                        hole_cells++;
+                    }
+                    else if (costmap[y * costmap_width + x] < 254.0f)  // Has other classification
+                    {
+                        other_cells++;
+                    }
+                }
+            }
+            
+            float hole_percentage = total_cells > 0 ? 
+                static_cast<float>(hole_cells) / total_cells : 0.0f;
+            float other_percentage = total_cells > 0 ?
+                static_cast<float>(other_cells) / total_cells : 0.0f;
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hull validation: %.1f%% hole, %.1f%% other (total %d cells)",
+                    hole_percentage * 100.0f, other_percentage * 100.0f, total_cells);
+            
+            // Reject if too much non-hole terrain
+            const float MAX_OTHER_PERCENTAGE = 0.30f;
+            
+            if (other_percentage > MAX_OTHER_PERCENTAGE)
+            {
+                RCLCPP_WARN(this->get_logger(), 
+                        "Hole %zu: hull covers too much non-hole terrain (%.1f%%), skipping",
+                        hole_idx, other_percentage * 100.0f);
+                continue;
+            }
+            
+            // Step 9: Fill the validated hull
+            int filled_cells = 0;
+            for (uint32_t y = 0; y < costmap_height; ++y)
+            {
+                for (uint32_t x = 0; x < costmap_width; ++x)
+                {
+                    if (fill_mask.at<uint8_t>(y, x) > 0)
+                    {
+                        size_t idx = y * costmap_width + x;
+                        filled_costmap[idx] = hole_cost;
+                        filled_cells++;
+                    }
+                }
+            }
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hole %zu: filled %d costmap cells with convex hull", 
+                    hole_idx, filled_cells);
+        }
+        
+        return filled_costmap;
+    }
+
 
     std::vector<float> dilateToFillUnknown(
     const std::vector<float>& costmap,
@@ -667,8 +884,7 @@ private:
         
         return points_with_segmentation;
     }
-
-
+   
     // - - - - - - - - - - - Surface Normal Functions - - - - - - - - - - -
 
     void surfaceNormalsCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -744,23 +960,6 @@ private:
             points_with_theta_rover[i * 4 + 3] = theta;
         }
         
-        // Print theta for pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            RCLCPP_INFO(this->get_logger(), "Theta values for pixels at row 283, columns 36-38:");
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_theta_rover[idx * 4 + 0];
-                float y = points_with_theta_rover[idx * 4 + 1];
-                float z = points_with_theta_rover[idx * 4 + 2];
-                float theta = points_with_theta_rover[idx * 4 + 3];
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f theta=%.6f", 
-                           idx, u, v, x, y, z, theta);
-            }
-        }
-
         return points_with_theta_rover;
     }
 
@@ -803,23 +1002,6 @@ private:
             points_with_costs[i * 4 + 1] = y_rover;
             points_with_costs[i * 4 + 2] = z_rover;
             points_with_costs[i * 4 + 3] = cost;
-        }
-        
-        // Print cost for pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            RCLCPP_INFO(this->get_logger(), "Cost values for pixels at row 283, columns 36-38:");
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_costs[idx * 4 + 0];
-                float y = points_with_costs[idx * 4 + 1];
-                float z = points_with_costs[idx * 4 + 2];
-                float cost = points_with_costs[idx * 4 + 3];
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f cost=%.6f", 
-                           idx, u, v, x, y, z, cost);
-            }
         }
 
         return points_with_costs;
@@ -908,6 +1090,7 @@ private:
     }
 
     costMapMetrics getCostMapMetrics(double fov_horizontal, double fov_vertical, double camera_height, double camera_pitch, double max_ray_length) {
+        camera_pitch = -camera_pitch; // Convert to height above ground
         // Handle when camera is below ground level, handle when max_ray_length is less than camera height
         if (camera_height < 0.0 || max_ray_length <= camera_height) {
             throw std::invalid_argument("Camera height must be non-negative and less than max ray length.");
@@ -1028,14 +1211,6 @@ private:
             int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
             int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
 
-            size_t u = i % 640;  // Column (x coordinate in image)
-            size_t v = i / 640;  // Row (y coordinate in image)
-
-            if (u == 320 && v == 240) {
-                RCLCPP_INFO(this->get_logger(), 
-                        "Ix, Iy: (%d, %d)", ix, iy);
-            }
-
             if (ix < 0 || iy < 0) {
                 points_out_of_bounds++;
                 continue;
@@ -1051,8 +1226,8 @@ private:
             points_binned++;
         }
         
-        RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
-                    points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
+        // RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
+        //             points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
 
         // Compute averages
         std::vector<float> avg(num_cells, 255.0f);  // Default to 255 for empty cells
@@ -1103,12 +1278,7 @@ private:
         }
         
         std::vector<float> downscaled_grid(new_width * new_height, 255.0f); // Initialize with 255 (unknown)
-        
-        RCLCPP_INFO(this->get_logger(), 
-                    "Downscaling costmap from %dx%d (%.3fm) to %dx%d (%.3fm) with factor %d",
-                    original_width, original_height, original_resolution,
-                    new_width, new_height, target_resolution, downscale_factor);
-        
+            
         // Downsample by averaging blocks
         for (uint32_t y = 0; y < new_height; ++y)
         {
@@ -1221,7 +1391,7 @@ private:
         if (width > 38 && height > 283)
         {
             std::string frame_type = normals ? "Normals" : "Points";
-            RCLCPP_INFO(this->get_logger(), "%s transformation for pixels at row 283, columns 36-38:", frame_type.c_str());
+            //RCLCPP_INFO(this->get_logger(), "%s transformation for pixels at row 283, columns 36-38:", frame_type.c_str());
             for (size_t u = 36; u <= 38; ++u)
             {
                 size_t v = 283;
@@ -1236,10 +1406,6 @@ private:
                 float x_rov = points_transformed[idx * 3 + 0];
                 float y_rov = points_transformed[idx * 3 + 1];
                 float z_rov = points_transformed[idx * 3 + 2];
-                
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu):", idx, u, v);
-                RCLCPP_INFO(this->get_logger(), "    Camera frame: x=%.6f y=%.6f z=%.6f", x_cam, y_cam, z_cam);
-                RCLCPP_INFO(this->get_logger(), "    Rover frame:  x=%.6f y=%.6f z=%.6f", x_rov, y_rov, z_rov);
             }
         }
         
