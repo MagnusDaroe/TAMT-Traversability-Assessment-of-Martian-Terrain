@@ -23,7 +23,7 @@ public:
     // Subscribers using message_filters
     rgb_subscriber_.subscribe(this, "/left_image");
     depth_subscriber_.subscribe(this, "/depth");
-    cam_pose_subscriber_.subscribe(this, "/camera_pose");
+    cam_pose_subscriber_.subscribe(this, "/rover_pose");
 
     // Camera intrinsic parameters
     this->declare_parameter<double>("fx", 525.0);
@@ -46,10 +46,10 @@ public:
                                       std::placeholders::_3));
 
     // Publishers for synchronized data
-    rgb_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/tamt/sync_rgb", 10);
-    depth_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/tamt/sync_depth", 10);
-    pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/tamt/sync_pointcloud", 10);
-    cam_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tamt/sync_cam_2_glob_pose", 10);
+    rgb_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/tamt/sync/rgb", 10);
+    depth_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/tamt/sync/depth", 10);
+    pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/tamt/sync/pointcloud", 10);
+    cam_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tamt/sync/rover_pose", 10);
 
     // Create service
     service_ = this->create_service<sync_pkg::srv::TriggerSync>(

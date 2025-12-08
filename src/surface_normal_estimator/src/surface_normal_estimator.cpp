@@ -18,19 +18,19 @@ public:
 
         // Subscribe to sync_depth topic
         depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/tamt/sync_depth",
+            "/tamt/sync/depth",
             qos,
             std::bind(&SurfaceNormalEstimation::imageCallback, this, std::placeholders::_1));
 
         // Publisher for raw surface normals (for computation)
         normal_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-            "/tamt/surface_normals", qos);
+            "/tamt/surface_normals/normals", qos);
 
         // Publisher for visualization normals (for RViz)
         normal_viz_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-            "/tamt/surface_normals_viz", qos);
+            "/tamt/surface_normals/normals_viz", qos);
 
-        RCLCPP_INFO(get_logger(), "SurfaceNormalEstimation node ready, listening to /sync_depth");
+        RCLCPP_INFO(get_logger(), "SurfaceNormalEstimation node ready, listening to /tamt/sync/depth");
     }
 
 private:

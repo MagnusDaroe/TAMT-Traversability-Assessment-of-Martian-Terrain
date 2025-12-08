@@ -5,7 +5,7 @@
       tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
       fov_x: 110.0  # Field of view in X direction (degrees) Horizontal
       fov_y: 70.0  # Field of view in Y direction (degrees) Vertical
-      max_distance: 2.5  # Maximum sensing distance (meters)
+      max_distance: 5.5  # Maximum sensing distance (meters)
       height: 0.43  # Camera height from ground (meters)
       
       # Static transform from rover frame to camera frame
@@ -31,7 +31,7 @@
       output_resolution: 0.05  # Costmap resolution (meters per cell)
 
       segmentation:
-        dilation_enabled: true
+        dilation_enabled: false
         dilation_kernel_size: 3
         dilation_min_confidence: 0.7
         
@@ -42,4 +42,4 @@
       bedrock: 0.1
       sand: 0.3
       rocks: 0.9
-      hole: 0.95
+      hole: 1.0

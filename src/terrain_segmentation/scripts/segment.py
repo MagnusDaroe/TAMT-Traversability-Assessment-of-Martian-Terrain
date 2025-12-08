@@ -44,7 +44,7 @@ class TAMTSegmentationNode(Node):
         # ------ Subscribers ------
         self.image_sub = self.create_subscription(
             Image,
-            '/tamt/sync_rgb',
+            '/tamt/sync/rgb',
             self.image_callback,
             10
         )

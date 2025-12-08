@@ -65,7 +65,7 @@ public:
     // Publishers
     rgb_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/left_image", qos);
     depth_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/depth", qos);
-    pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/camera_pose", qos);
+    pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/rover_pose", qos);
 
     // Locate data directory
     try {
