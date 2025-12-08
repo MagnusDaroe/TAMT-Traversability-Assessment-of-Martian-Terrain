@@ -16,7 +16,14 @@ find_package(OpenCV REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-include_directories(include)
+# After all find_package calls, add:
+include_directories(
+  include
+  ${rclcpp_INCLUDE_DIRS}
+  ${sensor_msgs_INCLUDE_DIRS}
+  ${cv_bridge_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
 
 # Generate service files
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -58,9 +65,9 @@ ament_target_dependencies(sanity_test
   ament_index_cpp
   cv_bridge
   message_filters
-  OpenCV
   geometry_msgs
 )
+target_link_libraries(sanity_test ${OpenCV_LIBRARIES})
 
 
 # This node provides a service to synchronise data and publish synchronised data topic
