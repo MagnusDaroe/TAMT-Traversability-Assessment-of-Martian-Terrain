@@ -1,4 +1,4 @@
-/tamt/costmap_module:
+/tamt/**:
   ros__parameters:
     #! Camera parameters
     camera:
@@ -30,6 +30,24 @@
           z: -0.5
           w: 0.5
     
+    #! Segmentation parameters
+    segmentation:
+      model:
+        model_dir: 'models/TAMT.pt' # Relative to workspace root "/home/spacerob/tamt/src/terrain_segmentation/models/TAMT.pt"
+        device: '0'  # Device to use: 0, 1, 2, etc., 'cpu'
+      
+      inference:
+        conf: 0.25          # Confidence threshold
+        iou: 0.50           # IoU threshold for NMS
+        imgsz: 640          # Input image size
+        max_det: 300        # Maximum number of detections per image
+        save_dir: '~/inference_results'  # Directory to save results
+      
+      output:
+        verbose: true       # Print detailed results
+        save_txt: false     # Save results to txt files
+        save_conf: false    # Save confidences in labels
+
     #! Rover parameters
     rover:
       width: 1.0  # Rover width (meters)

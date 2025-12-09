@@ -17,7 +17,8 @@ def generate_launch_description():
         executable='segment.py',
         name='terrain_segmentation_node',
         namespace='tamt',
-        arguments=['--ros-args', '--log-level', 'WARN'],
+        parameters=[config_file],
+        arguments=['--ros-args', '--log-level', 'INFO'],
         output='screen'
     )
    
@@ -27,6 +28,7 @@ def generate_launch_description():
         executable='surface_normal_estimator',
         name='surface_normal_estimator',
         namespace='tamt',
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
@@ -51,6 +53,7 @@ def generate_launch_description():
         executable='data_synchroniser',
         name='data_synchroniser',
         namespace='tamt',
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
@@ -64,6 +67,7 @@ def generate_launch_description():
         package='sync_pkg',
         executable='publish_updated_raw_data',
         name='raw_data_publisher',
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
