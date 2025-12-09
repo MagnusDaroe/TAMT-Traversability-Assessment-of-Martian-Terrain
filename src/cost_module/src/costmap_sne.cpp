@@ -1844,4 +1844,3 @@ int main(int argc, char** argv)
 
 
 //TODO Fix the cost of sne costmap to be in global frame
-//TODO in launch file set sync_nodes to start last
