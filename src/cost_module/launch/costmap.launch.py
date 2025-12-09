@@ -10,6 +10,8 @@ def generate_launch_description():
     
     # Path to your config file
     config_file = os.path.join(pkg_share, 'config', 'initial_params.yaml')
+
+
     
     # 1. Segmentation node
     terrain_segmentation = Node(

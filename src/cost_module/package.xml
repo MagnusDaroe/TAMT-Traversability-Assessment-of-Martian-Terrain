@@ -22,6 +22,7 @@
   <depend>cv_bridge</depend>
   <depend>tf2</depend>
   <depend>tf2_geometry_msgs</depend>
+  <depend>sync_pkg</depend>
 
   <!-- ROS 2 Python dependencies -->
   <depend>rclpy</depend>

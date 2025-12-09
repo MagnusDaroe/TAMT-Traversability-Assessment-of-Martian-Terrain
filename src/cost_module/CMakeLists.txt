@@ -17,7 +17,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
-
+find_package(sync_pkg REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -49,6 +49,7 @@ ament_target_dependencies(costmap_sne
   nav2_msgs
   tf2
   tf2_geometry_msgs
+  sync_pkg
 )
 
 target_link_libraries(costmap_sne ${OpenCV_LIBS})
