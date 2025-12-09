@@ -254,7 +254,7 @@ private:
             
             // Process SNE data
             auto [sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
-                surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
+                surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_);
             new_sne_data_ = false;
 
             // Publish SNE costmap
@@ -266,7 +266,7 @@ private:
             // Process segmentation mask data and get costmap
             auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
                 segmentationMask(pointcloud_rover, class_ids_, confidences_, 
-                            segmentation_width_, segmentation_height_, timestamp);
+                            segmentation_width_, segmentation_height_);
             new_segmentation_mask_data_ = false;
 
             if (seg_costmap.empty())
@@ -390,8 +390,7 @@ private:
         std::vector<uint8_t> class_ids_, 
         std::vector<float> confidences_, 
         uint32_t segmentation_width_, 
-        uint32_t segmentation_height_,
-        const rclcpp::Time& timestamp) 
+        uint32_t segmentation_height_) 
         {
             // Combine pointcloud with segmentation data
             std::vector<float> points_with_segmentation = combinePointcloudWithSegmentation(
@@ -949,8 +948,7 @@ private:
     }
 
     std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> surfaceNormals(const std::vector<float>& pointcloud_rover, 
-        const std::vector<float>& normals_camera, uint32_t width, uint32_t height,
-        const rclcpp::Time& timestamp)
+        const std::vector<float>& normals_camera, uint32_t width, uint32_t height)
     {
         std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height, true);
 
@@ -1495,28 +1493,6 @@ private:
             points_transformed[i * 3 + 2] = point_rover.z();
         }
 
-        // Print transformed pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            std::string frame_type = normals ? "Normals" : "Points";
-            //RCLCPP_INFO(this->get_logger(), "%s transformation for pixels at row 283, columns 36-38:", frame_type.c_str());
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                
-                // Before transformation (camera frame)
-                float x_cam = points[idx * 3 + 0];
-                float y_cam = points[idx * 3 + 1];
-                float z_cam = points[idx * 3 + 2];
-                
-                // After transformation (rover frame)
-                float x_rov = points_transformed[idx * 3 + 0];
-                float y_rov = points_transformed[idx * 3 + 1];
-                float z_rov = points_transformed[idx * 3 + 2];
-            }
-        }
-        
         return points_transformed;
     }
 
@@ -1709,7 +1685,6 @@ private:
         // Scale our 0-255 costs to 0-100 range
         for (size_t i = 0; i < width_cells * height_cells; ++i)
         {
-            float cost = averaged_grid[i];
             
             if (averaged_grid[i] >= 255.0f)
             {
@@ -1822,7 +1797,6 @@ private:
         // Scale our 0-255 costs to 0-100 range
         for (size_t i = 0; i < width_cells * height_cells; ++i)
         {
-            float cost = averaged_grid[i];
             
             if (averaged_grid[i] >= 255.0f)
             {
