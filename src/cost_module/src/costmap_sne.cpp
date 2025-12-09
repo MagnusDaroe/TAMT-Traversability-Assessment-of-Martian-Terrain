@@ -13,6 +13,7 @@
 #include <vector>
 #include <memory>
 #include <limits>
+// #include <fstream>
 
 class Costmaps : public rclcpp::Node
 {
@@ -921,6 +922,21 @@ private:
 
         auto [averaged_theta_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedGrid(points_with_theta_rover, costmap_metrics_);
         
+
+
+        // Save averaged_theta_grid to CSV (one value per line)
+        // {
+        //     std::ofstream csv_file("averaged_theta_grid.csv");
+        //     if (csv_file.is_open()) {
+        //         for (const auto& value : averaged_theta_grid) {
+        //             csv_file << value << "\n";
+        //         }
+        //         csv_file.close();
+        //     }
+        // }
+
+
+
         // Compute traversability cost for each point based on polar angle
         std::vector<float> averaged_cost_grid = computeSNETraversabilityCost(averaged_theta_grid);
 
