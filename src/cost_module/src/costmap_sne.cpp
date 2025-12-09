@@ -7,6 +7,7 @@
 #include <nav2_msgs/msg/costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <opencv2/opencv.hpp>
+#include "sync_pkg/srv/trigger_sync.hpp"
 #include <tuple>
 #include <algorithm>
 #include <cmath>
@@ -43,10 +44,16 @@ public:
         this->declare_parameter("costmap.segmentation.dilation_enabled", false);
         this->declare_parameter("costmap.segmentation.dilation_kernel_size", 3);
         this->declare_parameter("costmap.segmentation.dilation_min_confidence", 0.7);
+        this->declare_parameter("costmap.weight_sne", 0.4);
+        this->declare_parameter("costmap.weight_segmentation", 0.3);
+        this->declare_parameter("costmap.weight_roughness", 0.3);
 
         dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
         dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
         dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
+        weight_sne_ = this->get_parameter("costmap.weight_sne").as_float();
+        weight_segmentation_ = this->get_parameter("costmap.weight_segmentation").as_float();
+        weight_roughness_ = this->get_parameter("costmap.weight_roughness").as_float();
 
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
@@ -184,6 +191,9 @@ public:
             10
         );
         
+        // Create service client
+        trigger_sync_client_ = this->create_client<sync_pkg::srv::TriggerSync>("trigger_sync");
+        
         // Create timer that runs every 50ms
         timer_ = this->create_wall_timer(
             std::chrono::milliseconds(50),
@@ -290,6 +300,16 @@ private:
             // Downscale
             auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(combined_costmap, seg_width_cells, seg_height_cells, internal_resolution_, output_resolution_);
             publishCombinedCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, timestamp);
+            
+            // Trigger sync service call
+            if (trigger_sync_client_->service_is_ready()) {
+                auto request = std::make_shared<sync_pkg::srv::TriggerSync::Request>();
+                trigger_sync_client_->async_send_request(request,
+                    std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
+            } else {
+                RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
+            }
+            
         }
     }
 
@@ -339,6 +359,16 @@ private:
         );
         rover_to_global_transform_.setOrigin(t);
         rover_to_global_transform_.setRotation(q);
+    }
+
+    void handleSyncResponse(rclcpp::Client<sync_pkg::srv::TriggerSync>::SharedFuture future)
+    {
+        auto response = future.get();
+        if (response->success) {
+            RCLCPP_DEBUG(this->get_logger(), "TriggerSync succeeded: %s", response->message.c_str());
+        } else {
+            RCLCPP_WARN(this->get_logger(), "TriggerSync failed: %s", response->message.c_str());
+        }
     }
 
     // - - - - - - - - - - - Segmentation Functions - - - - - - - - - - -
@@ -1065,6 +1095,74 @@ private:
 
     // - - - - - - - - - - - Cost Map Functions - - - - - - - - - - -
 
+    // std::vector<float> combineCostMaps(
+    // const std::vector<float>& sne_costmap, const std::vector<float>& roughness_costmap, const std::vector<float>& seg_costmap)
+    // {
+    //     // Ensure both costmaps have the same dimensions
+    //     if (sne_costmap.size() != seg_costmap.size() || sne_costmap.size() != roughness_costmap.size())
+    //     {
+    //         RCLCPP_ERROR(this->get_logger(), 
+    //                      "Costmap size mismatch! SNE size: %zu, Segmentation size: %zu, Roughness size: %zu",
+    //                      sne_costmap.size(), seg_costmap.size(), roughness_costmap.size());
+    //         return std::vector<float>();
+    //     }
+
+    //     size_t num_cells = sne_costmap.size();
+    //     std::vector<float> combined_costmap(num_cells);
+
+    //     // Combine costmaps by taking the maximum cost at each cell
+    //     for (size_t i = 0; i < num_cells; ++i)
+    //     {
+    //         // Combine by weighted average, treating 255 as invalid
+    //         bool has_sne = sne_costmap[i] < 255.0f && sne_costmap[i] >= 0.0f;
+    //         bool has_seg = seg_costmap[i] < 255.0f && seg_costmap[i] >= 0.0f;
+    //         bool has_rough = roughness_costmap[i] < 255.0f && roughness_costmap[i] >= 0.0f;
+
+    //         // Count how many valid values we have
+    //         int valid_count = (has_sne ? 1 : 0) + (has_seg ? 1 : 0) + (has_rough ? 1 : 0);
+
+    //         if (valid_count == 0)
+    //         {
+    //             // No valid data for this cell
+    //             combined_costmap[i] = 255.0f;
+    //         }
+    //         else if (valid_count == 3)
+    //         {
+    //             // All three have valid data - use weighted average
+    //             combined_costmap[i] = (weight_sne_ * sne_costmap[i] + 
+    //                                    weight_segmentation_ * seg_costmap[i] + 
+    //                                    weight_roughness_ * roughness_costmap[i]) / 
+    //                                   (weight_sne_ + weight_segmentation_ + weight_roughness_);
+    //         }
+    //         else
+    //         {
+    //             // Only some have valid data - weighted average of valid ones only
+    //             float sum = 0.0f;
+    //             float weight_sum = 0.0f;
+                
+    //             if (has_sne)
+    //             {
+    //                 sum += weight_sne_ * sne_costmap[i];
+    //                 weight_sum += weight_sne_;
+    //             }
+    //             if (has_seg)
+    //             {
+    //                 sum += weight_segmentation_ * seg_costmap[i];
+    //                 weight_sum += weight_segmentation_;
+    //             }
+    //             if (has_rough)
+    //             {
+    //                 sum += weight_roughness_ * roughness_costmap[i];
+    //                 weight_sum += weight_roughness_;
+    //             }
+                
+    //             combined_costmap[i] = sum / weight_sum;
+    //         }
+    //     }
+
+    //     return combined_costmap;
+    // }
+
     std::vector<float> combineCostMaps(
     const std::vector<float>& sne_costmap,  const std::vector<float>& seg_costmap)
     {
@@ -1783,6 +1881,9 @@ private:
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_combined_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_combined_viz_pub_;
     
+    // Service client
+    rclcpp::Client<sync_pkg::srv::TriggerSync>::SharedPtr trigger_sync_client_;
+    
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
     uint32_t pointcloud_width_;
@@ -1829,6 +1930,9 @@ private:
     // Costmap parameters
     double internal_resolution_;
     double output_resolution_;
+    float weight_sne_;
+    float weight_segmentation_;
+    float weight_roughness_;
 
     // Risk parameters for different segmentation classes
     std::map<std::string, double> class_risk_map_;  // Map class names to risks

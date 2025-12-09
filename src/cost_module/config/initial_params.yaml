@@ -30,6 +30,11 @@
       internal_resolution: 0.01  # Internal costmap resolution (meters per cell)
       output_resolution: 0.05  # Costmap resolution (meters per cell)
 
+      # Costmap weights should sum to 1
+      weight_sne: 0.4  # Weight for SNE costmap
+      weight_segmentation: 0.3  # Weight for segmentation costmap
+      weight_roughness: 0.3  # Weight for roughness costmap
+      
       segmentation:
         dilation_enabled: false
         dilation_kernel_size: 3
