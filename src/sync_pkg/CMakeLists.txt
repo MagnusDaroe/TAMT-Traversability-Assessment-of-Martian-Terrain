@@ -55,19 +55,6 @@ ament_target_dependencies(publish_updated_raw_data
   OpenCV
 )
 
-# This node tests the synchronisation by subscribing to the synchronised data topic and saves in /sanity_data folder
-add_executable(sanity_test src/sanity_tester/sanity_test.cpp)
-ament_target_dependencies(sanity_test
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  message_filters
-  geometry_msgs
-)
-target_link_libraries(sanity_test ${OpenCV_LIBRARIES})
-
-
 # This node provides a service to synchronise data and publish synchronised data topic
 add_executable(data_synchroniser src/synchronised_data_publisher/sync_service_node.cpp)
 ament_target_dependencies(data_synchroniser
@@ -98,7 +85,6 @@ target_link_libraries(data_synchroniser_client "${cpp_typesupport_target}")
 
 install(TARGETS
   publish_raw_data
-  sanity_test
   data_synchroniser
   publish_updated_raw_data
   data_synchroniser_client

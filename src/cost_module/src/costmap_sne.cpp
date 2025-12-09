@@ -268,7 +268,7 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
             }
 
-            // Fill holes with convex hull approach - FIXED CALL
+            // Fill holes with convex hull method
             dilated_costmap = fillHolesWithConvexHull(
                 dilated_costmap,        // existing costmap
                 pointcloud_rover,       // 3D points
@@ -1090,7 +1090,6 @@ private:
     }
 
     costMapMetrics getCostMapMetrics(double fov_horizontal, double fov_vertical, double camera_height, double camera_pitch, double max_ray_length) {
-        camera_pitch = -camera_pitch; // Convert to height above ground
         // Handle when camera is below ground level, handle when max_ray_length is less than camera height
         if (camera_height < 0.0 || max_ray_length <= camera_height) {
             throw std::invalid_argument("Camera height must be non-negative and less than max ray length.");
@@ -1468,7 +1467,7 @@ private:
         // Set metadata
         costmap_msg.metadata.size_x = width_cells;
         costmap_msg.metadata.size_y = height_cells;
-        costmap_msg.metadata.resolution = output_resolution_;
+        costmap_msg.metadata.resolution = internal_resolution_;
 
         // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
@@ -1509,7 +1508,7 @@ private:
         grid_msg.header.frame_id = "map";  //  rover frame
         
         // Set metadata
-        grid_msg.info.resolution = output_resolution_;
+        grid_msg.info.resolution = internal_resolution_;
         grid_msg.info.width = width_cells;
         grid_msg.info.height = height_cells;
 
@@ -1555,7 +1554,7 @@ private:
         // Set metadata
         costmap_msg.metadata.size_x = height_cells;
         costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = output_resolution_;
+        costmap_msg.metadata.resolution = internal_resolution_;
         
         // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
@@ -1614,7 +1613,7 @@ private:
         // Set metadata
         viz_msg.info.width = width_cells;
         viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = output_resolution_;
+        viz_msg.info.resolution = internal_resolution_;
         
         // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
