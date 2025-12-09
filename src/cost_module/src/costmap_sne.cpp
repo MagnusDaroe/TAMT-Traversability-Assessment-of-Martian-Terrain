@@ -924,7 +924,7 @@ private:
         // Compute traversability cost for each point based on polar angle
         std::vector<float> averaged_cost_grid = computeSNETraversabilityCost(averaged_theta_grid);
 
-        // !this will probably not work anymore since traversability_costs is now in cost grid format
+        // !this will probably not work anymore since traversability costs are now in cost grid format
         // publishCosts(traversability_costs);
 
         return std::make_tuple(averaged_cost_grid, width_cells, height_cells, origin_x, origin_y);
@@ -1637,6 +1637,119 @@ private:
         costmap_sne_viz_pub_->publish(viz_msg);
     }
     
+
+     void publishCombinedCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                           const rclcpp::Time& timestamp)
+    {
+        // Create Costmap message
+        auto costmap_msg = nav2_msgs::msg::Costmap();
+        
+        // Set header
+        costmap_msg.header.stamp = timestamp;
+        costmap_msg.header.frame_id = "map"; 
+        
+        // Set metadata
+        costmap_msg.metadata.size_x = height_cells;
+        costmap_msg.metadata.size_y = width_cells;
+        costmap_msg.metadata.resolution = output_resolution_;
+        
+        // Set origin (position of cell (0,0) in the map frame)
+        costmap_msg.metadata.origin.position.x = origin_x;
+        costmap_msg.metadata.origin.position.y = origin_y;
+        costmap_msg.metadata.origin.position.z = 0;
+        
+        // Keep initial orientation X foward, Y left, Z up
+        costmap_msg.metadata.origin.orientation.x = 0;
+        costmap_msg.metadata.origin.orientation.y = 0;
+        costmap_msg.metadata.origin.orientation.z = -0.7071068;
+        costmap_msg.metadata.origin.orientation.w = 0.7071068;
+        
+        // Allocate data array
+        costmap_msg.data.resize(width_cells * height_cells);
+        
+        // Convert averaged costs directly to uint8_t (already in 0-255 range)
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {
+            float cost = averaged_grid[i];
+            
+            // Costs are already in 0-255 range from createAveragedGrid
+            // Just clamp and convert to uint8_t
+            if (cost >= 255.0f)
+            {
+                costmap_msg.data[i] = 255;
+            }
+            else if (cost <= 0.0f)
+            {
+                costmap_msg.data[i] = 0;
+            }
+            else
+            {
+                costmap_msg.data[i] = static_cast<uint8_t>(cost);
+            }
+        }
+        
+        // Publish the costmap
+        costmap_combined_pub_->publish(costmap_msg);
+        
+        // Also publish as OccupancyGrid for RViz2 visualization
+        publishCombinedCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        
+        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
+    }
+
+    void publishCombinedCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                              const rclcpp::Time& timestamp)
+    {
+        // Create OccupancyGrid message for RViz2 visualization
+        auto viz_msg = nav_msgs::msg::OccupancyGrid();
+        
+        // Set header
+        viz_msg.header.stamp = timestamp;
+        viz_msg.header.frame_id = "map";
+        
+        // Set metadata
+        viz_msg.info.width = width_cells;
+        viz_msg.info.height = height_cells;
+        viz_msg.info.resolution = output_resolution_;
+        
+        // Origin position in rover frame 2D
+        viz_msg.info.origin.position.x = origin_x;
+        viz_msg.info.origin.position.y = origin_y;
+        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
+        
+        // -90 degrees around Z axis
+        viz_msg.info.origin.orientation.x = 0;
+        viz_msg.info.origin.orientation.y = 0;
+        viz_msg.info.origin.orientation.z = -0.7071068;
+        viz_msg.info.origin.orientation.w = 0.7071068; 
+        
+        // Allocate data array
+        viz_msg.data.resize(width_cells * height_cells);
+        
+        // Convert costs to OccupancyGrid format
+        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
+        // Scale our 0-255 costs to 0-100 range
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {
+            float cost = averaged_grid[i];
+            
+            if (averaged_grid[i] >= 255.0f)
+            {
+                viz_msg.data[i] = -1; // Unknown
+            }
+            else
+            {
+                // Scale from 0-255 to 0-100
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+            }
+        }
+        
+        // Publish the visualization costmap
+        costmap_combined_viz_pub_->publish(viz_msg);
+    }
+    
+    
+
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
     
