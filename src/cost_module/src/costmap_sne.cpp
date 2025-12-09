@@ -13,7 +13,7 @@
 #include <vector>
 #include <memory>
 #include <limits>
-// #include <fstream>
+#include <fstream>
 
 class Costmaps : public rclcpp::Node
 {
@@ -925,17 +925,15 @@ private:
 
 
         // Save averaged_theta_grid to CSV (one value per line)
-        // {
-        //     std::ofstream csv_file("averaged_theta_grid.csv");
-        //     if (csv_file.is_open()) {
-        //         for (const auto& value : averaged_theta_grid) {
-        //             csv_file << value << "\n";
-        //         }
-        //         csv_file.close();
-        //     }
-        // }
-
-
+        {
+            std::ofstream csv_file("averaged_theta_grid.csv");
+            if (csv_file.is_open()) {
+                for (const auto& value : averaged_theta_grid) {
+                    csv_file << value << "\n";
+                }
+                csv_file.close();
+            }
+        }
 
         // Compute traversability cost for each point based on polar angle
         std::vector<float> averaged_cost_grid = computeSNETraversabilityCost(averaged_theta_grid);
@@ -982,14 +980,11 @@ private:
 
     std::vector<float> computeSNETraversabilityCost(const std::vector<float>& theta_grid)
     {
-        // Create output vector for points with traversability costs
         std::vector<float> grid_costs(theta_grid.size()); 
         
-        // Cost function: C = -13.857 * exp(theta) + 320.68
         const float exponential_coefficient = 13.857f;
         const float added_coefficient = 320.68f;
         
-        // Compute cost for each point
         for (size_t i = 0; i < theta_grid.size(); ++i)
         {
             float cost;
@@ -999,11 +994,9 @@ private:
             }            
             else
             {
-                // Compute cost: C = -13.857 * exp(theta) + 320.68 (theta in radians)
                 cost = -exponential_coefficient * std::exp(theta_grid[i]) + added_coefficient;
             }
-            // Clamp to valid range
-            grid_costs[i] = cost;
+            grid_costs[i] = std::clamp(cost, 0.0f, 255.0f);
         }
 
         return grid_costs;
@@ -1536,7 +1529,7 @@ private:
             else
             {
                 // Scale from 0-255 to 0-100
-                grid_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+                grid_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
             }
         }
         
@@ -1645,7 +1638,7 @@ private:
             else
             {
                 // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
             }
         }
         
@@ -1756,7 +1749,7 @@ private:
             else
             {
                 // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
             }
         }
         

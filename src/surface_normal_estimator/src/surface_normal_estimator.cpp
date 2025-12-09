@@ -127,8 +127,8 @@ private:
 
         // Declare camera parameters locally
         std::array<std::array<float, 3>, 3> camParam = {{
-                {7.215377e+02f, 0.000000e+00f, 6.095593e+02f},
-                {0.000000e+00f, 7.215377e+02f, 1.728540e+02f},
+                {685.51f, 0.000000e+00f, 480.00f},
+                {0.000000e+00f, 189.06f, 270.00f},
                 {0.000000e+00f, 0.000000e+00f, 1.000000e+00f}
             }};
 
