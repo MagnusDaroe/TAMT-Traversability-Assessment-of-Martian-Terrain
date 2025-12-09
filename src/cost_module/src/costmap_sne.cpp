@@ -6,6 +6,7 @@
 #include <tf2/LinearMath/Transform.h>
 #include <nav2_msgs/msg/costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <opencv2/opencv.hpp>
 #include <tuple>
 #include <algorithm>
 #include <cmath>
@@ -92,6 +93,7 @@ public:
         this->declare_parameter("class_risks.bedrock", 0.1);
         this->declare_parameter("class_risks.sand", 0.3);
         this->declare_parameter("class_risks.rocks", 0.9);
+        this->declare_parameter("class_risks.hole", 1.0);
         this->declare_parameter("class_risks.unknown", 1.0);
         
         // Load risk parameters - map class names to risk values
@@ -99,6 +101,7 @@ public:
         class_risk_map_["bedrock"] = this->get_parameter("class_risks.bedrock").as_double();
         class_risk_map_["sand"] = this->get_parameter("class_risks.sand").as_double();
         class_risk_map_["rocks"] = this->get_parameter("class_risks.rocks").as_double();
+        class_risk_map_["hole"] = this->get_parameter("class_risks.hole").as_double();
         class_risk_map_["unknown"] = this->get_parameter("class_risks.unknown").as_double();
         
         // Map class IDs to risk values (assuming class IDs: 0=soil, 1=bedrock, 2=sand, 3=rocks, 4=hole)
@@ -106,52 +109,24 @@ public:
         risk_params_[1] = class_risk_map_["bedrock"];
         risk_params_[2] = class_risk_map_["sand"];
         risk_params_[3] = class_risk_map_["rocks"];
+        risk_params_[4] = class_risk_map_["hole"];
         risk_params_[255] = class_risk_map_["unknown"];  // Unknown class
-        
+        hole_id_ = 4;
+
         // Subscribe to synchronized pointcloud topic
         pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/tamt/sync_pointcloud",
+            "/tamt/sync/pointcloud",
             10,
             std::bind(&Costmaps::pointcloudCallback, this, std::placeholders::_1)
         );
 
         // Subscribe to surface normals topic
         surface_normals_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/tamt/surface_normals",
+            "/tamt/surface_normals/normals",
             10,
             std::bind(&Costmaps::surfaceNormalsCallback, this, std::placeholders::_1)
         );
-
-        // Create publisher for costmap
-        costmap_sne_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
-            "/tamt/costmap_sne",
-            10
-        );
-
-        // Create publisher for visualization in RViz2
-        costmap_sne_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-            "/tamt/costmap_sne_viz",
-            10
-        );
-
-        // Publisher for costmap (nav2_msgs::msg::Costmap)
-        costmap_segmentation_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
-            "/tamt/costmap_segmentation",
-            10
-        );
-        
-        // Publisher for costmap visualization (nav_msgs::msg::OccupancyGrid)
-        costmap_segmentation_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-            "/tamt/costmap_segmentation_viz",
-            10
-        );
-
-        // Create publisher for per-pixel costs
-        cost_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-            "/tamt/costmap_sne/cost_image",
-            10
-        );
-        
+ 
         // Subscribe to encoded segmentation mask (16UC1 format)
         // High 8 bits: class ID, Low 8 bits: confidence (0-255)
         segmentation_mask_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
@@ -160,6 +135,55 @@ public:
             std::bind(&Costmaps::segmentationMaskCallback, this, std::placeholders::_1)
         );
 
+        rover_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/tamt/sync/rover_pose",
+            10,
+            std::bind(&Costmaps::roverPoseCallback, this, std::placeholders::_1)
+        );
+
+        // - - - - - - - - - - Publishers - - - - - - - - - - 
+
+         // Create publisher for costmap
+        costmap_sne_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+            "/tamt/costmap/surface_normals",
+            10
+        );
+
+        // Create publisher for visualization in RViz2
+        costmap_sne_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/tamt/costmap/surface_normals_viz",
+            10
+        );
+
+        // Create publisher for per-pixel costs
+        cost_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+            "/tamt/costmap/surface_normals/cost_image",
+            10
+        );
+
+        // Publisher for costmap (nav2_msgs::msg::Costmap)
+        costmap_segmentation_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+            "/tamt/costmap/segmentation",
+            10
+        );
+        
+        // Publisher for costmap visualization (nav_msgs::msg::OccupancyGrid)
+        costmap_segmentation_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/tamt/costmap/segmentation_viz",
+            10
+        );
+
+        // Combined costmap publisher
+        costmap_combined_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+            "/tamt/costmap/combined",
+            10
+        );
+
+        costmap_combined_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/tamt/costmap/combined_viz",
+            10
+        );
+        
         // Create timer that runs every 50ms
         timer_ = this->create_wall_timer(
             std::chrono::milliseconds(50),
@@ -169,6 +193,22 @@ public:
         costmap_metrics_ = getCostMapMetricsRoverFrame(getCostMapMetrics(fov_x_, fov_y_, camera_height_, tilt_angle_, max_distance_), cam_x_to_rover_transform_, camera_height_);
                 
         RCLCPP_INFO(this->get_logger(), "Costmaps node initialized");
+
+
+                
+        // After setting up cam_x_to_rover_transform_ in constructor:
+        tf2::Vector3 cam_origin = cam_x_to_rover_transform_.getOrigin();
+        RCLCPP_INFO(this->get_logger(), 
+                    "Camera origin in rover frame: x=%.3f, y=%.3f, z=%.3f", 
+                    cam_origin.x(), cam_origin.y(), cam_origin.z());
+
+        // Also print what the transform does to a forward ray
+        tf2::Vector3 forward_ray_cam(0, 0, 1);  // Forward in camera
+        tf2::Vector3 forward_ray_rover = cam_x_to_rover_transform_.getBasis() * forward_ray_cam;
+        RCLCPP_INFO(this->get_logger(), 
+                    "Forward camera ray (0,0,1) transforms to rover frame: x=%.3f, y=%.3f, z=%.3f", 
+                    forward_ray_rover.x(), forward_ray_rover.y(), forward_ray_rover.z());
+
     }
 
 private:
@@ -212,13 +252,13 @@ private:
 
             if (seg_costmap.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping dilation");
+                RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping processing");
                 return;
             }
 
             // Apply dilation if enabled
             std::vector<float> dilated_costmap = seg_costmap;
-            if (dilation_enabled_)
+            if (dilation_enabled_ == true)
             {
                 dilated_costmap = dilateToFillUnknown(
                     seg_costmap, class_grid, confidence_grid, 
@@ -227,18 +267,29 @@ private:
                 
                 RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
             }
+
+            // Fill holes with convex hull method
+            dilated_costmap = fillHolesWithConvexHull(
+                dilated_costmap,        // existing costmap
+                pointcloud_rover,       // 3D points
+                class_ids_,            // segmentation classes
+                confidences_,          // segmentation confidence
+                segmentation_width_,   // image width
+                segmentation_height_,  // image height
+                seg_width_cells,       // costmap width
+                seg_height_cells,      // costmap height
+                seg_origin_x,          // costmap origin x
+                seg_origin_y);         // costmap origin y
         
             // Publish final segmentation costmap
-            //publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
-
-            
+            publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
 
             // Combine Cost maps
             std::vector<float> combined_costmap = combineCostMaps(sne_costmap, dilated_costmap);
             
             // Downscale
             auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(combined_costmap, seg_width_cells, seg_height_cells, internal_resolution_, output_resolution_);
-            publishSegmentationCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, timestamp);
+            publishCombinedCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, timestamp);
         }
     }
 
@@ -270,6 +321,24 @@ private:
         decodeMask(msg, class_ids_, confidences_);
 
         new_segmentation_mask_data_ = true;
+    }
+
+    void roverPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        // Convert PoseStamped to tf2::Transform
+        tf2::Quaternion q(
+            msg->pose.orientation.x,
+            msg->pose.orientation.y,
+            msg->pose.orientation.z,
+            msg->pose.orientation.w
+        );
+        tf2::Vector3 t(
+            msg->pose.position.x,
+            msg->pose.position.y,
+            msg->pose.position.z
+        );
+        rover_to_global_transform_.setOrigin(t);
+        rover_to_global_transform_.setRotation(q);
     }
 
     // - - - - - - - - - - - Segmentation Functions - - - - - - - - - - -
@@ -381,6 +450,196 @@ private:
 
         return std::make_tuple(std::move(class_map), std::move(confidence_map));
     }
+
+    std::vector<float> fillHolesWithConvexHull(
+    const std::vector<float>& costmap,
+    const std::vector<float>& pointcloud_rover,
+    const std::vector<uint8_t>& class_ids,
+    const std::vector<float>& confidences,
+    uint32_t image_width, 
+    uint32_t image_height,
+    uint32_t costmap_width,
+    uint32_t costmap_height,
+    float origin_x,
+    float origin_y)
+    {
+        // Step 1: Find hole mask in image space
+        cv::Mat hole_mask_image(image_height, image_width, CV_8UC1, cv::Scalar(0));
+        
+        for (uint32_t v = 0; v < image_height; ++v)
+        {
+            for (uint32_t u = 0; u < image_width; ++u)
+            {
+                size_t idx = v * image_width + u;
+                if (class_ids[idx] == hole_id_ && confidences[idx] > 0.3f)
+                {
+                    hole_mask_image.at<uint8_t>(v, u) = 255;
+                }
+            }
+        }
+        
+        // Step 2: Find contours in image space
+        std::vector<std::vector<cv::Point>> contours_image;
+        cv::findContours(hole_mask_image, contours_image, cv::RETR_EXTERNAL, 
+                        cv::CHAIN_APPROX_SIMPLE);
+        
+        RCLCPP_INFO(this->get_logger(), "Found %zu hole(s) in image space", 
+                    contours_image.size());
+        
+        std::vector<float> filled_costmap = costmap;
+        float hole_cost = std::min(254.0f, risk_params_[hole_id_] * 255.0f);
+        
+        // Step 3: Process each hole
+        for (size_t hole_idx = 0; hole_idx < contours_image.size(); ++hole_idx)
+        {
+            const auto& contour_image = contours_image[hole_idx];
+            double area = cv::contourArea(contour_image);
+            
+            if (area < 100.0)  // Skip small holes
+            {
+                continue;
+            }
+            
+            // Step 4: Get ALL hole pixels for this contour (not just contour boundary)
+            cv::Mat hole_region_mask = cv::Mat::zeros(image_height, image_width, CV_8UC1);
+            std::vector<std::vector<cv::Point>> single_contour = {contour_image};
+            cv::drawContours(hole_region_mask, single_contour, 0, cv::Scalar(255), cv::FILLED);
+            
+            // Step 5: Project ALL hole pixels to costmap coordinates
+            std::vector<cv::Point> costmap_points;
+            
+            for (uint32_t v = 0; v < image_height; ++v)
+            {
+                for (uint32_t u = 0; u < image_width; ++u)
+                {
+                    // Only process pixels marked as this hole
+                    if (hole_region_mask.at<uint8_t>(v, u) == 0)
+                        continue;
+                    
+                    // Get 3D coordinates
+                    size_t pc_idx = v * image_width + u;
+                    float x = pointcloud_rover[pc_idx * 3 + 0];
+                    float y = pointcloud_rover[pc_idx * 3 + 1];
+                    float z = pointcloud_rover[pc_idx * 3 + 2];
+                    
+                    // Skip invalid points
+                    if (!std::isfinite(x) || !std::isfinite(y) || z <= 0.0f)
+                        continue;
+                    
+                    // Project to costmap coordinates
+                    int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
+                    int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
+                    
+                    // Check bounds
+                    if (ix >= 0 && iy >= 0 && 
+                        static_cast<uint32_t>(ix) < costmap_height && 
+                        static_cast<uint32_t>(iy) < costmap_width)
+                    {
+                        costmap_points.push_back(cv::Point(iy, ix));  // Note: OpenCV Point(x, y) = (col, row)
+                    }
+                }
+            }
+            
+            if (costmap_points.size() < 3)
+            {
+                RCLCPP_WARN(this->get_logger(), 
+                        "Hole %zu: insufficient costmap points (%zu), skipping", 
+                        hole_idx, costmap_points.size());
+                continue;
+            }
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hole %zu: projected %zu pixels to costmap", 
+                    hole_idx, costmap_points.size());
+            
+            // Step 6: Compute convex hull in COSTMAP space
+            std::vector<cv::Point> hull_costmap;
+            cv::convexHull(costmap_points, hull_costmap);
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hole %zu: convex hull has %zu points in costmap space", 
+                    hole_idx, hull_costmap.size());
+            
+            // Step 7: Create fill mask and validate
+            cv::Mat fill_mask = cv::Mat::zeros(costmap_height, costmap_width, CV_8UC1);
+            cv::fillConvexPoly(fill_mask, hull_costmap, cv::Scalar(255));
+            
+            // Step 8: Validate - count what's in the hull
+            int total_cells = 0;
+            int hole_cells = 0;
+            int other_cells = 0;
+            
+            // Create a set of original projected points for fast lookup
+            std::set<std::pair<int, int>> hole_point_set;
+            for (const auto& pt : costmap_points)
+            {
+                hole_point_set.insert({pt.y, pt.x});  // Store as (row, col)
+            }
+            
+            for (uint32_t y = 0; y < costmap_height; ++y)
+            {
+                for (uint32_t x = 0; x < costmap_width; ++x)
+                {
+                    if (fill_mask.at<uint8_t>(y, x) == 0)
+                        continue;
+                    
+                    total_cells++;
+                    
+                    // Check if this cell was part of the original hole projection
+                    if (hole_point_set.count({y, x}))
+                    {
+                        hole_cells++;
+                    }
+                    else if (costmap[y * costmap_width + x] < 254.0f)  // Has other classification
+                    {
+                        other_cells++;
+                    }
+                }
+            }
+            
+            float hole_percentage = total_cells > 0 ? 
+                static_cast<float>(hole_cells) / total_cells : 0.0f;
+            float other_percentage = total_cells > 0 ?
+                static_cast<float>(other_cells) / total_cells : 0.0f;
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hull validation: %.1f%% hole, %.1f%% other (total %d cells)",
+                    hole_percentage * 100.0f, other_percentage * 100.0f, total_cells);
+            
+            // Reject if too much non-hole terrain
+            const float MAX_OTHER_PERCENTAGE = 0.30f;
+            
+            if (other_percentage > MAX_OTHER_PERCENTAGE)
+            {
+                RCLCPP_WARN(this->get_logger(), 
+                        "Hole %zu: hull covers too much non-hole terrain (%.1f%%), skipping",
+                        hole_idx, other_percentage * 100.0f);
+                continue;
+            }
+            
+            // Step 9: Fill the validated hull
+            int filled_cells = 0;
+            for (uint32_t y = 0; y < costmap_height; ++y)
+            {
+                for (uint32_t x = 0; x < costmap_width; ++x)
+                {
+                    if (fill_mask.at<uint8_t>(y, x) > 0)
+                    {
+                        size_t idx = y * costmap_width + x;
+                        filled_costmap[idx] = hole_cost;
+                        filled_cells++;
+                    }
+                }
+            }
+            
+            RCLCPP_INFO(this->get_logger(), 
+                    "Hole %zu: filled %d costmap cells with convex hull", 
+                    hole_idx, filled_cells);
+        }
+        
+        return filled_costmap;
+    }
+
 
     std::vector<float> dilateToFillUnknown(
     const std::vector<float>& costmap,
@@ -553,7 +812,7 @@ private:
             else
             {
                 // Get risk value for this class
-                float risk = 0.5f;          // Default risk if class not found
+                float risk = 1.0f;          // Default risk if class not found
                 auto it = risk_params_.find(class_id);
                 if (it != risk_params_.end())
                 {
@@ -561,8 +820,8 @@ private:
                 }
 
                 // Compute cost: C = risk * confidence * 255
-                
-                float x = risk * confidence;
+                float confidence_weight = -0.5*confidence + 1.5f;
+                float x = std::clamp(risk * confidence_weight, 0.0f, 1.0f);
                 const float a = 15.0f; // steepness
                 const float b = 0.3f;  // midpoint
                 float sigmoid = 1.0f / (1.0f + std::exp(-a * (x - b)));
@@ -605,7 +864,11 @@ private:
             float confidence = confidences[i];
             
             // Set confidence to 0 if z (depth) exceeds max_distance or is invalid
-            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
+            if (class_id != hole_id_ )
+            {
+
+            }
+            else if (z > max_distance_ || std::isnan(z) || std::isinf(z) )
             {
                 confidence = 0.0f;
                 points_beyond_max_distance++;
@@ -621,8 +884,7 @@ private:
         
         return points_with_segmentation;
     }
-
-
+   
     // - - - - - - - - - - - Surface Normal Functions - - - - - - - - - - -
 
     void surfaceNormalsCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -699,23 +961,6 @@ private:
             points_with_theta_rover[i * 4 + 3] = theta;
         }
         
-        // Print theta for pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            RCLCPP_INFO(this->get_logger(), "Theta values for pixels at row 283, columns 36-38:");
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_theta_rover[idx * 4 + 0];
-                float y = points_with_theta_rover[idx * 4 + 1];
-                float z = points_with_theta_rover[idx * 4 + 2];
-                float theta = points_with_theta_rover[idx * 4 + 3];
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f theta=%.6f", 
-                           idx, u, v, x, y, z, theta);
-            }
-        }
-
         return points_with_theta_rover;
     }
 
@@ -743,23 +988,6 @@ private:
             }
             // Clamp to valid range
             grid_costs[i] = cost;
-        }
-        
-        // Print cost for pixels at row 283, columns 36-38
-        if (width > 38 && height > 283)
-        {
-            RCLCPP_INFO(this->get_logger(), "Cost values for pixels at row 283, columns 36-38:");
-            for (size_t u = 36; u <= 38; ++u)
-            {
-                size_t v = 283;
-                size_t idx = v * static_cast<size_t>(width) + u;
-                float x = points_with_costs[idx * 4 + 0];
-                float y = points_with_costs[idx * 4 + 1];
-                float z = points_with_costs[idx * 4 + 2];
-                float cost = points_with_costs[idx * 4 + 3];
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu): x=%.3f y=%.3f z=%.3f cost=%.6f", 
-                           idx, u, v, x, y, z, cost);
-            }
         }
 
         return grid_costs;
@@ -968,14 +1196,6 @@ private:
             int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
             int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
 
-            size_t u = i % 640;  // Column (x coordinate in image)
-            size_t v = i / 640;  // Row (y coordinate in image)
-
-            if (u == 320 && v == 240) {
-                RCLCPP_INFO(this->get_logger(), 
-                        "Ix, Iy: (%d, %d)", ix, iy);
-            }
-
             if (ix < 0 || iy < 0) {
                 points_out_of_bounds++;
                 continue;
@@ -991,8 +1211,8 @@ private:
             points_binned++;
         }
         
-        RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
-                    points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
+        // RCLCPP_INFO(this->get_logger(), "Binning results: %d points binned, %d out of bounds, %d invalid (total points: %zu)", 
+        //             points_binned, points_out_of_bounds, points_invalid, points_with_costs.size() / 4);
 
         // Compute averages
         std::vector<float> avg(num_cells, 255.0f);  // Default to 255 for empty cells
@@ -1043,12 +1263,7 @@ private:
         }
         
         std::vector<float> downscaled_grid(new_width * new_height, 255.0f); // Initialize with 255 (unknown)
-        
-        RCLCPP_INFO(this->get_logger(), 
-                    "Downscaling costmap from %dx%d (%.3fm) to %dx%d (%.3fm) with factor %d",
-                    original_width, original_height, original_resolution,
-                    new_width, new_height, target_resolution, downscale_factor);
-        
+            
         // Downsample by averaging blocks
         for (uint32_t y = 0; y < new_height; ++y)
         {
@@ -1143,6 +1358,7 @@ private:
             tf2::Vector3 point_rover;
             if (normals) {
                 // Transform normal vector to rover frame (rotation only, no translation)
+                //point_rover = rover_to_global_transform_.getBasis() * cam_x_to_rover_transform_.getBasis() * point_cam; //! FIX! When rover transform is fixed apply this
                 point_rover = cam_x_to_rover_transform_.getBasis() * point_cam;
             }
             else {
@@ -1160,7 +1376,7 @@ private:
         if (width > 38 && height > 283)
         {
             std::string frame_type = normals ? "Normals" : "Points";
-            RCLCPP_INFO(this->get_logger(), "%s transformation for pixels at row 283, columns 36-38:", frame_type.c_str());
+            //RCLCPP_INFO(this->get_logger(), "%s transformation for pixels at row 283, columns 36-38:", frame_type.c_str());
             for (size_t u = 36; u <= 38; ++u)
             {
                 size_t v = 283;
@@ -1175,10 +1391,6 @@ private:
                 float x_rov = points_transformed[idx * 3 + 0];
                 float y_rov = points_transformed[idx * 3 + 1];
                 float z_rov = points_transformed[idx * 3 + 2];
-                
-                RCLCPP_INFO(this->get_logger(), "  Pixel[%zu] (u=%zu, v=%zu):", idx, u, v);
-                RCLCPP_INFO(this->get_logger(), "    Camera frame: x=%.6f y=%.6f z=%.6f", x_cam, y_cam, z_cam);
-                RCLCPP_INFO(this->get_logger(), "    Rover frame:  x=%.6f y=%.6f z=%.6f", x_rov, y_rov, z_rov);
             }
         }
         
@@ -1241,7 +1453,7 @@ private:
         // Set metadata
         costmap_msg.metadata.size_x = width_cells;
         costmap_msg.metadata.size_y = height_cells;
-        costmap_msg.metadata.resolution = output_resolution_;
+        costmap_msg.metadata.resolution = internal_resolution_;
 
         // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
@@ -1282,7 +1494,7 @@ private:
         grid_msg.header.frame_id = "map";  //  rover frame
         
         // Set metadata
-        grid_msg.info.resolution = output_resolution_;
+        grid_msg.info.resolution = internal_resolution_;
         grid_msg.info.width = width_cells;
         grid_msg.info.height = height_cells;
 
@@ -1328,7 +1540,7 @@ private:
         // Set metadata
         costmap_msg.metadata.size_x = height_cells;
         costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = output_resolution_;
+        costmap_msg.metadata.resolution = internal_resolution_;
         
         // Set origin (position of cell (0,0) in the map frame)
         costmap_msg.metadata.origin.position.x = origin_x;
@@ -1387,7 +1599,7 @@ private:
         // Set metadata
         viz_msg.info.width = width_cells;
         viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = output_resolution_;
+        viz_msg.info.resolution = internal_resolution_;
         
         // Origin position in rover frame 2D
         viz_msg.info.origin.position.x = origin_x;
@@ -1425,122 +1637,6 @@ private:
         costmap_sne_viz_pub_->publish(viz_msg);
     }
     
-<<<<<<< Updated upstream
-=======
-
-     void publishCombinedCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                           const rclcpp::Time& timestamp)
-    {
-        // Create Costmap message
-        auto costmap_msg = nav2_msgs::msg::Costmap();
-        
-        // Set header
-        costmap_msg.header.stamp = timestamp;
-        costmap_msg.header.frame_id = "map"; 
-        
-        // Set metadata
-        costmap_msg.metadata.size_x = height_cells;
-        costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = output_resolution_;
-        
-        // Set origin (position of cell (0,0) in the map frame)
-        costmap_msg.metadata.origin.position.x = origin_x;
-        costmap_msg.metadata.origin.position.y = origin_y;
-        costmap_msg.metadata.origin.position.z = 0;
-        
-        // Keep initial orientation X foward, Y left, Z up
-        costmap_msg.metadata.origin.orientation.x = 0;
-        costmap_msg.metadata.origin.orientation.y = 0;
-        costmap_msg.metadata.origin.orientation.z = -0.7071068;
-        costmap_msg.metadata.origin.orientation.w = 0.7071068;
-        
-        // Allocate data array
-        costmap_msg.data.resize(width_cells * height_cells);
-        
-        // Convert averaged costs directly to uint8_t (already in 0-255 range)
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {
-            float cost = averaged_grid[i];
-            
-            // Costs are already in 0-255 range from createAveragedGrid
-            // Just clamp and convert to uint8_t
-            if (cost >= 255.0f)
-            {
-                costmap_msg.data[i] = 255;
-            }
-            else if (cost <= 0.0f)
-            {
-                costmap_msg.data[i] = 0;
-            }
-            else
-            {
-                costmap_msg.data[i] = static_cast<uint8_t>(cost);
-            }
-        }
-        
-        // Publish the costmap
-        costmap_combined_pub_->publish(costmap_msg);
-        
-        // Also publish as OccupancyGrid for RViz2 visualization
-        publishCombinedCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-        
-        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
-    }
-
-    void publishCombinedCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                              const rclcpp::Time& timestamp)
-    {
-        // Create OccupancyGrid message for RViz2 visualization
-        auto viz_msg = nav_msgs::msg::OccupancyGrid();
-        
-        // Set header
-        viz_msg.header.stamp = timestamp;
-        viz_msg.header.frame_id = "map";
-        
-        // Set metadata
-        viz_msg.info.width = width_cells;
-        viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = output_resolution_;
-        
-        // Origin position in rover frame 2D
-        viz_msg.info.origin.position.x = origin_x;
-        viz_msg.info.origin.position.y = origin_y;
-        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
-        
-        // -90 degrees around Z axis
-        viz_msg.info.origin.orientation.x = 0;
-        viz_msg.info.origin.orientation.y = 0;
-        viz_msg.info.origin.orientation.z = -0.7071068;
-        viz_msg.info.origin.orientation.w = 0.7071068; 
-        
-        // Allocate data array
-        viz_msg.data.resize(width_cells * height_cells);
-        
-        // Convert costs to OccupancyGrid format
-        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
-        // Scale our 0-255 costs to 0-100 range
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {
-            float cost = averaged_grid[i];
-            
-            if (averaged_grid[i] >= 255.0f)
-            {
-                viz_msg.data[i] = -1; // Unknown
-            }
-            else
-            {
-                // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
-            }
-        }
-        
-        // Publish the visualization costmap
-        costmap_combined_viz_pub_->publish(viz_msg);
-    }
-    
-    
-
->>>>>>> Stashed changes
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
     
@@ -1548,6 +1644,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr surface_normals_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr segmentation_mask_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr rover_pose_sub_;
     
     // Publishers
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_sne_pub_;
@@ -1555,6 +1652,8 @@ private:
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_segmentation_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_segmentation_viz_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr cost_image_pub_;
+    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_combined_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_combined_viz_pub_;
     
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
@@ -1579,6 +1678,9 @@ private:
 
     // Camera to rover transformation
     tf2::Transform cam_x_to_rover_transform_;
+    
+    // Rover to global transformation
+    tf2::Transform rover_to_global_transform_;
 
     // Costmap metrics
     costMapMetrics costmap_metrics_;
@@ -1593,6 +1695,8 @@ private:
     // Rover parameters
     double rover_width_;
     double rover_length_;
+
+    int hole_id_;
     
     // Costmap parameters
     double internal_resolution_;

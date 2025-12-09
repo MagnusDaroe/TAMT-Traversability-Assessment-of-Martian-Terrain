@@ -2,7 +2,7 @@
 
 # Model configuration
 model:
-  model_dir: '/home/spacerob/tamt/src/terrain_segmentation/models/terrain_segmentation/tamt_20000_hyperparam_tune_final_best/weights/last.pt'
+  model_dir: '/home/spacerob/tamt/src/terrain_segmentation/models/TAMT.pt'
   device: '0'  # Device to use: 0, 1, 2, etc., 'cpu'
 
 # Dataset configuration

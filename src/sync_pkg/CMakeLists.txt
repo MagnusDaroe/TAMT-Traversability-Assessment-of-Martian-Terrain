@@ -44,18 +44,16 @@ ament_target_dependencies(publish_raw_data
   OpenCV
 )
 
-# This node tests the synchronisation by subscribing to the synchronised data topic and saves in /sanity_data folder
-add_executable(sanity_test src/sanity_tester/sanity_test.cpp)
-ament_target_dependencies(sanity_test
+# This node publishes the (unsynchronised) raw data read from /frame_data folder according to the project folder convention
+add_executable(publish_updated_raw_data src/raw_data_publisher/updated_raw_data_publisher.cpp)
+ament_target_dependencies(publish_updated_raw_data
   rclcpp
   sensor_msgs
   ament_index_cpp
   cv_bridge
-  message_filters
   geometry_msgs
+  OpenCV
 )
-target_link_libraries(sanity_test ${OpenCV_LIBRARIES})
-
 
 # This node provides a service to synchronise data and publish synchronised data topic
 add_executable(data_synchroniser src/synchronised_data_publisher/sync_service_node.cpp)
@@ -87,8 +85,8 @@ target_link_libraries(data_synchroniser_client "${cpp_typesupport_target}")
 
 install(TARGETS
   publish_raw_data
-  sanity_test
   data_synchroniser
+  publish_updated_raw_data
   data_synchroniser_client
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -104,6 +102,11 @@ install(DIRECTORY include/
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/
   DESTINATION share/${PROJECT_NAME}/data
+  USE_SOURCE_PERMISSIONS
+)
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/frame_data/
+  DESTINATION share/${PROJECT_NAME}/frame_data
   USE_SOURCE_PERMISSIONS
 )
 

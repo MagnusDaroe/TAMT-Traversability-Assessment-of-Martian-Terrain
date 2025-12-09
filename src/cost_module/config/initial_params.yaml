@@ -8,6 +8,16 @@
       max_distance: 2.5  # Maximum sensing distance (meters)
       height: 0.43  # Camera height from ground (meters)
       
+      resolution:
+        width: 960  # Camera image width (pixels)
+        height: 540  # Camera image height (pixels)
+
+      intrinsics:
+        fx: 685.51  # Focal length in pixels (x-axis)
+        fy: 189.06  # Focal length in pixels (y-axis)
+        cx: 480.00  # Principal point x-coordinate in pixels
+        cy: 270.00  # Principal point y-coordinate in pixels
+
       # Static transform from rover frame to camera frame
       transform:
         translation:
@@ -42,4 +52,4 @@
       bedrock: 0.1
       sand: 0.3
       rocks: 0.9
-      hole: 0.95
+      hole: 1.0

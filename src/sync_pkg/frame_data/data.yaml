@@ -1,0 +1,10 @@
+path: /home/tamt/replicator_output/rover_data/session_20251208_132840
+train: images
+val: images
+
+names:
+  0: soil
+  1: bedrock
+  2: sand
+  3: rocks
+  4: hole
