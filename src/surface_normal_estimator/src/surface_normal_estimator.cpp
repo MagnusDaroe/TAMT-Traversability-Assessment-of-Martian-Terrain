@@ -15,6 +15,24 @@ public:
         rclcpp::QoS qos(rclcpp::KeepLast(10));
         qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
         qos.durability(rclcpp::DurabilityPolicy::Volatile);  // Changed from TransientLocal to Volatile
+        
+        this->declare_parameter("camera.intrinsics.fx", 1.0f);
+        this->declare_parameter("camera.intrinsics.fy", 1.0f);
+        this->declare_parameter("camera.intrinsics.cx", 1.0f);
+        this->declare_parameter("camera.intrinsics.cy", 1.0f);
+
+        double fx = this->get_parameter("camera.intrinsics.fx").as_double();
+        double fy = this->get_parameter("camera.intrinsics.fy").as_double();
+        double cx = this->get_parameter("camera.intrinsics.cx").as_double();
+        double cy = this->get_parameter("camera.intrinsics.cy").as_double();
+
+        camParam_ = {{
+                {fx, 0.000000e+00f, cx},
+                {0.000000e+00f, fy, cy},
+                {0.000000e+00f, 0.000000e+00f, 1.000000e+00f}
+            }};
+
+
 
         // Subscribe to sync_depth topic
         depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
@@ -125,13 +143,6 @@ private:
 
         RCLCPP_DEBUG(get_logger(), "Surface normal estimation started");
 
-        // Declare camera parameters locally
-        std::array<std::array<float, 3>, 3> camParam = {{
-                {685.51f, 0.000000e+00f, 480.00f},
-                {0.000000e+00f, 189.06f, 270.00f},
-                {0.000000e+00f, 0.000000e+00f, 1.000000e+00f}
-            }};
-
         int h = height;
         int w = width;
 
@@ -157,8 +168,8 @@ private:
         {
             for (int j = 0; j < w; ++j)
             {
-                Y[i][j] = Z[i][j] * (v_map[i][j] - camParam[1][2]) / camParam[1][1]; // Use fy, not fx
-                X[i][j] = Z[i][j] * (u_map[i][j] - camParam[0][2]) / camParam[0][0]; // This one is correct
+                Y[i][j] = Z[i][j] * (v_map[i][j] - camParam_[1][2]) / camParam_[1][1]; // Use fy, not fx
+                X[i][j] = Z[i][j] * (u_map[i][j] - camParam_[0][2]) / camParam_[0][0]; // This one is correct
                 if (std::isnan(Z[i][j]))
                     Z[i][j] = 0;
                 D[i][j] = (Z[i][j] != 0) ? 1.0f / Z[i][j] : 0.0f;
@@ -198,8 +209,8 @@ private:
         {
             for (int j = 0; j < w; ++j)
             {
-                nx_t[i][j] = Gu[i][j] * camParam[0][0];
-                ny_t[i][j] = Gv[i][j] * camParam[1][1];
+                nx_t[i][j] = Gu[i][j] * camParam_[0][0];
+                ny_t[i][j] = Gv[i][j] * camParam_[1][1];
             }
         }
 
@@ -306,6 +317,9 @@ private:
         // Return 3-channel normal map as [nx, ny, nz]
         return {nx, ny, nz};
     }
+
+
+    std::array<std::array<float, 3>, 3> camParam_;
 };
 
 int main(int argc, char *argv[])

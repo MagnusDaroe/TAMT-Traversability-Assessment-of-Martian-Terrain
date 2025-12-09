@@ -1,5 +1,5 @@
 #include "rclcpp/rclcpp.hpp"
-#include "sync_pkg/srv/trigger_sync.hpp"
+#include "interfaces/srv/trigger_sync.hpp"
 
 #include <chrono>
 #include <memory>
@@ -12,7 +12,7 @@ public:
   ClientNode()
   : Node("sync_client_node")
   {
-    client_ = this->create_client<sync_pkg::srv::TriggerSync>("trigger_sync");
+    client_ = this->create_client<interfaces::srv::TriggerSync>("trigger_sync");
 
     // Wait for the service to be available
     while (!client_->wait_for_service(2s)) {
@@ -33,13 +33,13 @@ public:
 private:
   void call_trigger_service()
   {
-    auto request = std::make_shared<sync_pkg::srv::TriggerSync::Request>();
+    auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
 
     auto future = client_->async_send_request(request,
       std::bind(&ClientNode::handle_response, this, std::placeholders::_1));
   }
 
-  void handle_response(rclcpp::Client<sync_pkg::srv::TriggerSync>::SharedFuture future)
+  void handle_response(rclcpp::Client<interfaces::srv::TriggerSync>::SharedFuture future)
   {
     auto response = future.get();
     if (response->success) {
@@ -49,7 +49,7 @@ private:
     }
   }
 
-  rclcpp::Client<sync_pkg::srv::TriggerSync>::SharedPtr client_;
+  rclcpp::Client<interfaces::srv::TriggerSync>::SharedPtr client_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
