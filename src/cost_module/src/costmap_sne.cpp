@@ -982,8 +982,8 @@ private:
     {
         std::vector<float> grid_costs(theta_grid.size()); 
         
-        const float exponential_coefficient = 13.857f;
-        const float added_coefficient = 320.68f;
+        const float quadratic_coefficient = -102.94f;
+        const float linear_coefficient = 323.40f;
         
         for (size_t i = 0; i < theta_grid.size(); ++i)
         {
@@ -994,7 +994,7 @@ private:
             }            
             else
             {
-                cost = -exponential_coefficient * std::exp(theta_grid[i]) + added_coefficient;
+                cost = quadratic_coefficient * theta_grid[i] * theta_grid[i] + linear_coefficient * theta_grid[i];
             }
             grid_costs[i] = std::clamp(cost, 0.0f, 255.0f);
         }
