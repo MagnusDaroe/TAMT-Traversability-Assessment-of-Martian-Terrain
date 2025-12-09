@@ -27,9 +27,9 @@ public:
         double cy = this->get_parameter("camera.intrinsics.cy").as_double();
 
         camParam_ = {{
-                {fx, 0.000000e+00f, cx},
-                {0.000000e+00f, fy, cy},
-                {0.000000e+00f, 0.000000e+00f, 1.000000e+00f}
+                {fx, 0.000000e+00, cx},
+                {0.000000e+00, fy, cy},
+                {0.000000e+00, 0.000000e+00, 1.000000e+00}
             }};
 
 
@@ -304,7 +304,7 @@ private:
                 }
 
                 // flips all the normals to point upwards
-                float sign = (ny[i][j] < 0) ? -1.0f : 1.0f;
+                float sign = (ny[i][j] > 0) ? -1.0f : 1.0f;
                 nx[i][j] *= sign;
                 ny[i][j] *= sign;
                 nz[i][j] *= sign;
@@ -319,7 +319,7 @@ private:
     }
 
 
-    std::array<std::array<float, 3>, 3> camParam_;
+    std::array<std::array<double, 3>, 3> camParam_;
 };
 
 int main(int argc, char *argv[])
