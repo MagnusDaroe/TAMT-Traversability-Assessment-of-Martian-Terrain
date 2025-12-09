@@ -37,6 +37,8 @@
     
     #! Costmap parameters
     costmap:
+      publish_individual_layers: true
+      publish_visualizations: false
       internal_resolution: 0.01  # Internal costmap resolution (meters per cell)
       output_resolution: 0.05  # Costmap resolution (meters per cell)
 

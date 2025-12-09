@@ -38,6 +38,11 @@ public:
         this->declare_parameter("rover.length", 1.5);
         this->declare_parameter("costmap.internal_resolution", 0.01);
         this->declare_parameter("costmap.output_resolution", 0.05);
+        this->declare_parameter("costmap.publish_individual_layers", true);
+        this->declare_parameter("costmap.publish_visualizations", true);
+
+        publish_individual_layers_ = this->get_parameter("costmap.publish_individual_layers").as_bool();
+        publish_costmap_visualizations_ = this->get_parameter("costmap.publish_visualizations").as_bool();
         
         //! Need params for dilation 
         this->declare_parameter("costmap.segmentation.dilation_enabled", false);
@@ -143,47 +148,49 @@ public:
 
         // - - - - - - - - - - Publishers - - - - - - - - - - 
 
-         // Create publisher for costmap
-        costmap_sne_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
-            "/tamt/costmap/surface_normals",
-            10
-        );
-
-        // Create publisher for visualization in RViz2
-        costmap_sne_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-            "/tamt/costmap/surface_normals_viz",
-            10
-        );
-
-        // Create publisher for per-pixel costs
-        cost_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-            "/tamt/costmap/surface_normals/cost_image",
-            10
-        );
-
-        // Publisher for costmap (nav2_msgs::msg::Costmap)
-        costmap_segmentation_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
-            "/tamt/costmap/segmentation",
-            10
-        );
-        
-        // Publisher for costmap visualization (nav_msgs::msg::OccupancyGrid)
-        costmap_segmentation_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-            "/tamt/costmap/segmentation_viz",
-            10
-        );
-
         // Combined costmap publisher
         costmap_combined_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
             "/tamt/costmap/combined",
             10
         );
+        if (publish_costmap_visualizations_){
+            costmap_combined_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+                "/tamt/costmap/combined_viz",
+                10
+            );
+        }
 
-        costmap_combined_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-            "/tamt/costmap/combined_viz",
+        // Check if individual layers publishing is enabled
+        if (publish_individual_layers_){
+            // Create publisher for costmap
+            costmap_sne_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+            "/tamt/costmap/surface_normals",
             10
-        );
+            );
+
+            // Publisher for costmap (nav2_msgs::msg::Costmap)
+            costmap_segmentation_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+                "/tamt/costmap/segmentation",
+                10
+            );
+      
+
+            // Publishers for visualization in RViz2
+            if (publish_costmap_visualizations_){            
+                costmap_sne_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+                "/tamt/costmap/surface_normals_viz",
+                10
+                );
+
+                costmap_segmentation_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+                "/tamt/costmap/segmentation_viz",
+                10
+                );
+            }
+        }
         
+     
+
         // Create timer that runs every 50ms
         timer_ = this->create_wall_timer(
             std::chrono::milliseconds(50),
@@ -225,12 +232,13 @@ private:
     {
         if(new_sne_data_ && new_segmentation_mask_data_)
         {
+            
             if (!sync_pointcloud_)
             {
                 RCLCPP_WARN(this->get_logger(), "Pointcloud not yet received, skipping processing");
                 return;
             }
-            
+ 
             rclcpp::Time timestamp = this->now();
             
             std::vector<float> pointcloud = pointcloudToVector();
@@ -240,9 +248,12 @@ private:
             auto [sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
                 surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
             new_sne_data_ = false;
-            
-            // Publish SNE costmap with CORRECT variable names
-            publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
+
+            // Publish SNE costmap
+            if (publish_individual_layers_){
+                publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
+            }
+           
 
             // Process segmentation mask data and get costmap
             auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
@@ -281,8 +292,11 @@ private:
                 seg_origin_x,          // costmap origin x
                 seg_origin_y);         // costmap origin y
         
+
             // Publish final segmentation costmap
-            publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
+            if (publish_individual_layers_){
+                publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
+            }
 
             // Combine Cost maps
             std::vector<float> combined_costmap = combineCostMaps(sne_costmap, dilated_costmap);
@@ -922,7 +936,6 @@ private:
         // Compute traversability cost for each point based on polar angle
         std::vector<float> traversability_costs = computeSNETraversabilityCost(points_with_theta_rover, width, height);
 
-        publishCosts(traversability_costs);
         // Create averaged cost grid
         auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(traversability_costs, costmap_metrics_);
 
@@ -1414,44 +1427,6 @@ private:
  
     // - - - - - - - - - - - Publishers Functions - - - - - - - - - - -
 
-    void publishCosts(const std::vector<float>& traversability_costs)
-    {
-        // traversability_costs format: [x, y, z, cost] for each point
-        // We need to reconstruct the image with costs in their original pixel positions
-        
-        size_t num_points = traversability_costs.size() / 4;
-        
-        // Assume standard camera resolution (you may want to pass width/height as parameters)
-        uint32_t width = sync_pointcloud_->width;
-        uint32_t height = sync_pointcloud_->height;
-        
-        // Create image message
-        auto cost_image_msg = sensor_msgs::msg::Image();
-        cost_image_msg.header.stamp = this->now();
-        cost_image_msg.header.frame_id = "camera_frame";
-        cost_image_msg.height = height;
-        cost_image_msg.width = width;
-        cost_image_msg.encoding = "32FC1";  // Single channel 32-bit float
-        cost_image_msg.is_bigendian = false;
-        cost_image_msg.step = width * sizeof(float);
-        
-        // Allocate data
-        cost_image_msg.data.resize(width * height * sizeof(float));
-        float* cost_data = reinterpret_cast<float*>(cost_image_msg.data.data());
-        
-        // Fill the image with cost values
-        for (size_t i = 0; i < num_points; ++i)
-        {
-            float cost = traversability_costs[i * 4 + 3];  // Extract cost from [x, y, z, cost]
-            cost_data[i] = cost;
-        }
-        
-        // Publish the cost image
-        cost_image_pub_->publish(cost_image_msg);
-        
-        RCLCPP_DEBUG(this->get_logger(), "Published cost image with %dx%d pixels", width, height);
-    }   
-
     void publishSegmentationCostmap(const std::vector<float>& averaged_grid, 
                         uint32_t width_cells, uint32_t height_cells, 
                         float origin_x, float origin_y,
@@ -1490,7 +1465,9 @@ private:
         costmap_segmentation_pub_->publish(costmap_msg);
         
         // Also publish visualization (OccupancyGrid)
+        if (publish_costmap_visualizations_){
         publishSegmentationCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        }
         
         RCLCPP_DEBUG(this->get_logger(), "Published costmap: %dx%d in base_link frame", width_cells, height_cells);
     }
@@ -1595,8 +1572,10 @@ private:
         costmap_sne_pub_->publish(costmap_msg);
         
         // Also publish as OccupancyGrid for RViz2 visualization
+        if (publish_costmap_visualizations_){
         publishSNECostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-        
+        }
+
         RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
     }
 
@@ -1706,8 +1685,10 @@ private:
         costmap_combined_pub_->publish(costmap_msg);
         
         // Also publish as OccupancyGrid for RViz2 visualization
-        publishCombinedCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-        
+        if (publish_costmap_visualizations_){
+            publishCombinedCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        }
+
         RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
     }
 
@@ -1778,7 +1759,6 @@ private:
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sne_viz_pub_;
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_segmentation_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_segmentation_viz_pub_;
-    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr cost_image_pub_;
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_combined_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_combined_viz_pub_;
     
@@ -1828,6 +1808,8 @@ private:
     // Costmap parameters
     double internal_resolution_;
     double output_resolution_;
+    bool publish_individual_layers_;
+    bool publish_costmap_visualizations_;
 
     // Risk parameters for different segmentation classes
     std::map<std::string, double> class_risk_map_;  // Map class names to risks
