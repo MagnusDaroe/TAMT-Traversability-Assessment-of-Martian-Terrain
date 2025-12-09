@@ -993,10 +993,10 @@ private:
         for (size_t i = 0; i < theta_grid.size(); ++i)
         {
             float cost;
-            if (std::isnan(theta_grid[i]) || theta_grid[i] == 0.0f)
+            if (std::isnan(theta_grid[i]) || theta_grid[i] == 0.0f || theta_grid[i] == 255.0f)
             {
                 cost = 255.0f;
-            }
+            }            
             else
             {
                 // Compute cost: C = -13.857 * exp(theta) + 320.68 (theta in radians)
