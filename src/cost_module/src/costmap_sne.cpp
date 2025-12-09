@@ -314,13 +314,13 @@ private:
             publishCombinedCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, timestamp);
             
             // Trigger sync service call
-            if (trigger_sync_client_->service_is_ready()) {
-                auto request = std::make_shared<sync_pkg::srv::TriggerSync::Request>();
-                trigger_sync_client_->async_send_request(request,
-                    std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
-            } else {
-                RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
-            }
+            // if (trigger_sync_client_->service_is_ready()) {
+            //     auto request = std::make_shared<sync_pkg::srv::TriggerSync::Request>();
+            //     trigger_sync_client_->async_send_request(request,
+            //         std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
+            // } else {
+            //     RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
+            // }
             
         }
     }
