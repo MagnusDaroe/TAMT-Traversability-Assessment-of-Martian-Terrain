@@ -24,16 +24,15 @@ public:
     cam_pose_subscriber_.subscribe(this, "/rover_pose");
 
     // Camera intrinsic parameters
-    this->declare_parameter<double>("fx", 685.51);
-    this->declare_parameter<double>("fy", 189.06);
-    this->declare_parameter<double>("cx", 480.00);
-    this->declare_parameter<double>("cy", 270.00);
+    this->declare_parameter("camera.intrinsics.fx", 1.0f);
+    this->declare_parameter("camera.intrinsics.fy", 1.0f);
+    this->declare_parameter("camera.intrinsics.cx", 1.0f);
+    this->declare_parameter("camera.intrinsics.cy", 1.0f);
 
-    // Get camera intrinsic parameters
-    intrinsics_.fx = this->get_parameter("fx").as_double();
-    intrinsics_.fy = this->get_parameter("fy").as_double();
-    intrinsics_.cx = this->get_parameter("cx").as_double();
-    intrinsics_.cy = this->get_parameter("cy").as_double();
+    intrinsics_.fx = this->get_parameter("camera.intrinsics.fx").as_double();
+    intrinsics_.fy = this->get_parameter("camera.intrinsics.fy").as_double();
+    intrinsics_.cx = this->get_parameter("camera.intrinsics.cx").as_double();
+    intrinsics_.cy = this->get_parameter("camera.intrinsics.cy").as_double();
 
     // Synchronizer with ApproximateTime policy and queue size = 50
     sync_ = std::make_shared<message_filters::Synchronizer<ApproxSyncPolicy>>(
