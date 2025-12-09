@@ -29,7 +29,6 @@ install(PROGRAMS
   scripts/segment.py
   scripts/mask_decoder.py
   scripts/Image_publisher_node.py
-  scripts/check_pointcloud.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
