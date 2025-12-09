@@ -9,9 +9,7 @@ call service: ros2 service call trigger_sync sync_pkg/srv/TriggerSync
 #include <message_filters/synchronizer.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
-// Include your custom service (adjust package name as needed)
 #include "sync_pkg/srv/trigger_sync.hpp"
-
 #include "depth_to_pointcloud.hpp"
 
 class SyncServiceNode : public rclcpp::Node
@@ -26,10 +24,10 @@ public:
     cam_pose_subscriber_.subscribe(this, "/rover_pose");
 
     // Camera intrinsic parameters
-    this->declare_parameter<double>("fx", 525.0);
-    this->declare_parameter<double>("fy", 525.0);
-    this->declare_parameter<double>("cx", 319.5);
-    this->declare_parameter<double>("cy", 239.5);
+    this->declare_parameter<double>("fx", 685.51);
+    this->declare_parameter<double>("fy", 189.06);
+    this->declare_parameter<double>("cx", 480.00);
+    this->declare_parameter<double>("cy", 270.00);
 
     // Get camera intrinsic parameters
     intrinsics_.fx = this->get_parameter("fx").as_double();
@@ -94,7 +92,7 @@ private:
     const std::shared_ptr<sync_pkg::srv::TriggerSync::Request> request,
     std::shared_ptr<sync_pkg::srv::TriggerSync::Response> response)
   {
-    (void)request; // Request is empty, so we suppress unused parameter warning
+    (void)request;
 
     // Check if synchronized data is available
     if (!latest_rgb_msg_ || !latest_depth_msg_ || !latest_cam_pose_msg_) {
@@ -115,7 +113,7 @@ private:
       
       if (pointcloud_msg) {
         pointcloud_publisher_->publish(*pointcloud_msg);
-// Log timestamps to verify synchronization  -- new section
+
         const auto& rgb_msg = latest_rgb_msg_;
         const auto& depth_msg = latest_depth_msg_;
         const auto& cam_pose_msg = latest_cam_pose_msg_;
