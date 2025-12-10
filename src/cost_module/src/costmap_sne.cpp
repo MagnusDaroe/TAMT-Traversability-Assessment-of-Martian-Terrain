@@ -265,7 +265,7 @@ private:
 
             // Process segmentation mask data and get costmap
             auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
-                segmentationMask(pointcloud_rover, class_ids_, confidences_, 
+                computeSegmentationCostMap(pointcloud_rover, class_ids_, confidences_, 
                             segmentation_width_, segmentation_height_);
             new_segmentation_mask_data_ = false;
 
@@ -287,7 +287,7 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
             }
 
-            // Fill holes with convex hull method
+            // // Fill holes with convex hull method
             dilated_costmap = fillHolesWithConvexHull(
                 dilated_costmap,        // existing costmap
                 pointcloud_rover,       // 3D points
@@ -385,7 +385,7 @@ private:
 
     // - - - - - - - - - - - Segmentation Functions - - - - - - - - - - -
 
-    std::tuple<std::vector<float>, std::vector<uint8_t>, std::vector<float>, uint32_t, uint32_t, float, float> segmentationMask(
+    std::tuple<std::vector<float>, std::vector<uint8_t>, std::vector<float>, uint32_t, uint32_t, float, float> computeSegmentationCostMap(
         std::vector<float>& pointcloud_rover, 
         std::vector<uint8_t> class_ids_, 
         std::vector<float> confidences_, 
@@ -503,184 +503,139 @@ private:
     uint32_t costmap_height,
     float origin_x,
     float origin_y)
+{
+    std::vector<float> filled_costmap = costmap;
+    
+    RCLCPP_INFO(this->get_logger(), "fillHolesWithConvexHull START");
+    
+    // Step 1: Create hole segmentation mask
+    cv::Mat hole_mask(image_height, image_width, CV_8UC1, cv::Scalar(0));
+    
+    for (uint32_t v = 0; v < image_height; ++v)
     {
-        // Step 1: Find hole mask in image space
-        cv::Mat hole_mask_image(image_height, image_width, CV_8UC1, cv::Scalar(0));
+        for (uint32_t u = 0; u < image_width; ++u)
+        {
+            size_t idx = v * image_width + u;
+            if (class_ids[idx] == hole_id_ && confidences[idx] > 0.3f)
+            {
+                hole_mask.at<uint8_t>(v, u) = 255;
+            }
+        }
+    }
+    
+    // Step 1.5: Morphological closing
+    cv::Mat closed_hole_mask;
+    cv::Mat close_kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(21, 21));
+    cv::morphologyEx(hole_mask, closed_hole_mask, cv::MORPH_CLOSE, close_kernel);
+    
+    // Step 2: Find contours
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(closed_hole_mask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    
+    RCLCPP_INFO(this->get_logger(), "Found %zu separate hole region(s)", contours.size());
+    
+    float hole_cost = std::min(254.0f, risk_params_[hole_id_] * 255.0f);
+    
+    // Step 3: Process each hole region
+    for (size_t i = 0; i < contours.size(); ++i)
+    {
+        double area = cv::contourArea(contours[i]);
+        if (area < 100.0) continue;
+        
+        RCLCPP_INFO(this->get_logger(), "Processing hole region %zu (area=%.1f)", i, area);
+        
+        // Create mask for this hole
+        cv::Mat single_hole_mask = cv::Mat::zeros(image_height, image_width, CV_8UC1);
+        cv::drawContours(single_hole_mask, contours, i, cv::Scalar(255), cv::FILLED);
+        
+        // Step 4: DILATE the hole to find surrounding rim
+        cv::Mat dilated_hole;
+        int rim_search_size = 10;  // Search 10 pixels outside the hole
+        cv::Mat rim_kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, 
+                                                       cv::Size(2*rim_search_size+1, 2*rim_search_size+1));
+        cv::dilate(single_hole_mask, dilated_hole, rim_kernel);
+        
+        // Rim = dilated - original hole
+        cv::Mat rim_mask;
+        cv::subtract(dilated_hole, single_hole_mask, rim_mask);
+        
+        // Step 5: Find rim pixels with valid depth
+        std::vector<cv::Point> costmap_points;
+        int rim_pixels_checked = 0;
+        int valid_rim_pixels = 0;
         
         for (uint32_t v = 0; v < image_height; ++v)
         {
             for (uint32_t u = 0; u < image_width; ++u)
             {
-                size_t idx = v * image_width + u;
-                if (class_ids[idx] == hole_id_ && confidences[idx] > 0.3f)
+                if (rim_mask.at<uint8_t>(v, u) == 0)
+                    continue;
+                
+                rim_pixels_checked++;
+                
+                // Get 3D coordinates
+                size_t pc_idx = v * image_width + u;
+                float x = pointcloud_rover[pc_idx * 3 + 0];
+                float y = pointcloud_rover[pc_idx * 3 + 1];
+                float z = pointcloud_rover[pc_idx * 3 + 2];
+                
+                // Only use pixels with valid depth
+                if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || z <= 0.0f)
+                    continue;
+                
+                valid_rim_pixels++;
+                
+                // Project to costmap
+                int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
+                int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
+                
+                if (ix >= 0 && iy >= 0 && 
+                    static_cast<uint32_t>(ix) < costmap_height && 
+                    static_cast<uint32_t>(iy) < costmap_width)
                 {
-                    hole_mask_image.at<uint8_t>(v, u) = 255;
+                    costmap_points.push_back(cv::Point(iy, ix));
                 }
             }
         }
         
-        // Step 2: Find contours in image space
-        std::vector<std::vector<cv::Point>> contours_image;
-        cv::findContours(hole_mask_image, contours_image, cv::RETR_EXTERNAL, 
-                        cv::CHAIN_APPROX_SIMPLE);
+        RCLCPP_INFO(this->get_logger(), 
+                    "Hole region %zu: checked %d rim pixels, %d with valid depth, %zu projected to costmap", 
+                    i, rim_pixels_checked, valid_rim_pixels, costmap_points.size());
         
-        RCLCPP_INFO(this->get_logger(), "Found %zu hole(s) in image space", 
-                    contours_image.size());
-        
-        std::vector<float> filled_costmap = costmap;
-        float hole_cost = std::min(254.0f, risk_params_[hole_id_] * 255.0f);
-        
-        // Step 3: Process each hole
-        for (size_t hole_idx = 0; hole_idx < contours_image.size(); ++hole_idx)
+        if (costmap_points.size() < 3)
         {
-            const auto& contour_image = contours_image[hole_idx];
-            double area = cv::contourArea(contour_image);
-            
-            if (area < 100.0)  // Skip small holes
-            {
-                continue;
-            }
-            
-            // Step 4: Get ALL hole pixels for this contour (not just contour boundary)
-            cv::Mat hole_region_mask = cv::Mat::zeros(image_height, image_width, CV_8UC1);
-            std::vector<std::vector<cv::Point>> single_contour = {contour_image};
-            cv::drawContours(hole_region_mask, single_contour, 0, cv::Scalar(255), cv::FILLED);
-            
-            // Step 5: Project ALL hole pixels to costmap coordinates
-            std::vector<cv::Point> costmap_points;
-            
-            for (uint32_t v = 0; v < image_height; ++v)
-            {
-                for (uint32_t u = 0; u < image_width; ++u)
-                {
-                    // Only process pixels marked as this hole
-                    if (hole_region_mask.at<uint8_t>(v, u) == 0)
-                        continue;
-                    
-                    // Get 3D coordinates
-                    size_t pc_idx = v * image_width + u;
-                    float x = pointcloud_rover[pc_idx * 3 + 0];
-                    float y = pointcloud_rover[pc_idx * 3 + 1];
-                    float z = pointcloud_rover[pc_idx * 3 + 2];
-                    
-                    // Skip invalid points
-                    if (!std::isfinite(x) || !std::isfinite(y) || z <= 0.0f)
-                        continue;
-                    
-                    // Project to costmap coordinates
-                    int ix = static_cast<int>(std::floor((x - origin_x) / internal_resolution_));
-                    int iy = static_cast<int>(std::floor(-(y - origin_y) / internal_resolution_));
-                    
-                    // Check bounds
-                    if (ix >= 0 && iy >= 0 && 
-                        static_cast<uint32_t>(ix) < costmap_height && 
-                        static_cast<uint32_t>(iy) < costmap_width)
-                    {
-                        costmap_points.push_back(cv::Point(iy, ix));  // Note: OpenCV Point(x, y) = (col, row)
-                    }
-                }
-            }
-            
-            if (costmap_points.size() < 3)
-            {
-                RCLCPP_WARN(this->get_logger(), 
-                        "Hole %zu: insufficient costmap points (%zu), skipping", 
-                        hole_idx, costmap_points.size());
-                continue;
-            }
-            
-            RCLCPP_INFO(this->get_logger(), 
-                    "Hole %zu: projected %zu pixels to costmap", 
-                    hole_idx, costmap_points.size());
-            
-            // Step 6: Compute convex hull in COSTMAP space
-            std::vector<cv::Point> hull_costmap;
-            cv::convexHull(costmap_points, hull_costmap);
-            
-            RCLCPP_INFO(this->get_logger(), 
-                    "Hole %zu: convex hull has %zu points in costmap space", 
-                    hole_idx, hull_costmap.size());
-            
-            // Step 7: Create fill mask and validate
-            cv::Mat fill_mask = cv::Mat::zeros(costmap_height, costmap_width, CV_8UC1);
-            cv::fillConvexPoly(fill_mask, hull_costmap, cv::Scalar(255));
-            
-            // Step 8: Validate - count what's in the hull
-            int total_cells = 0;
-            int hole_cells = 0;
-            int other_cells = 0;
-            
-            // Create a set of original projected points for fast lookup
-            std::set<std::pair<int, int>> hole_point_set;
-            for (const auto& pt : costmap_points)
-            {
-                hole_point_set.insert({pt.y, pt.x});  // Store as (row, col)
-            }
-            
-            for (uint32_t y = 0; y < costmap_height; ++y)
-            {
-                for (uint32_t x = 0; x < costmap_width; ++x)
-                {
-                    if (fill_mask.at<uint8_t>(y, x) == 0)
-                        continue;
-                    
-                    total_cells++;
-                    
-                    // Check if this cell was part of the original hole projection
-                    if (hole_point_set.count({y, x}))
-                    {
-                        hole_cells++;
-                    }
-                    else if (costmap[y * costmap_width + x] < 254.0f)  // Has other classification
-                    {
-                        other_cells++;
-                    }
-                }
-            }
-            
-            float hole_percentage = total_cells > 0 ? 
-                static_cast<float>(hole_cells) / total_cells : 0.0f;
-            float other_percentage = total_cells > 0 ?
-                static_cast<float>(other_cells) / total_cells : 0.0f;
-            
-            RCLCPP_INFO(this->get_logger(), 
-                    "Hull validation: %.1f%% hole, %.1f%% other (total %d cells)",
-                    hole_percentage * 100.0f, other_percentage * 100.0f, total_cells);
-            
-            // Reject if too much non-hole terrain
-            const float MAX_OTHER_PERCENTAGE = 0.30f;
-            
-            if (other_percentage > MAX_OTHER_PERCENTAGE)
-            {
-                RCLCPP_WARN(this->get_logger(), 
-                        "Hole %zu: hull covers too much non-hole terrain (%.1f%%), skipping",
-                        hole_idx, other_percentage * 100.0f);
-                continue;
-            }
-            
-            // Step 9: Fill the validated hull
-            int filled_cells = 0;
-            for (uint32_t y = 0; y < costmap_height; ++y)
-            {
-                for (uint32_t x = 0; x < costmap_width; ++x)
-                {
-                    if (fill_mask.at<uint8_t>(y, x) > 0)
-                    {
-                        size_t idx = y * costmap_width + x;
-                        filled_costmap[idx] = hole_cost;
-                        filled_cells++;
-                    }
-                }
-            }
-            
-            RCLCPP_INFO(this->get_logger(), 
-                    "Hole %zu: filled %d costmap cells with convex hull", 
-                    hole_idx, filled_cells);
+            RCLCPP_WARN(this->get_logger(), "Hole region %zu: insufficient rim points, skipping", i);
+            continue;
         }
         
-        return filled_costmap;
+        // Step 6: Convex hull
+        std::vector<cv::Point> hull;
+        cv::convexHull(costmap_points, hull);
+        
+        RCLCPP_INFO(this->get_logger(), "Hole region %zu: convex hull has %zu points", i, hull.size());
+        
+        // Step 7: Fill hull
+        cv::Mat fill_mask = cv::Mat::zeros(costmap_height, costmap_width, CV_8UC1);
+        cv::fillConvexPoly(fill_mask, hull, cv::Scalar(255));
+        
+        int filled_cells = 0;
+        for (uint32_t y = 0; y < costmap_height; ++y)
+        {
+            for (uint32_t x = 0; x < costmap_width; ++x)
+            {
+                if (fill_mask.at<uint8_t>(y, x) > 0)
+                {
+                    filled_costmap[y * costmap_width + x] = hole_cost;
+                    filled_cells++;
+                }
+            }
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Hole region %zu: filled %d costmap cells", i, filled_cells);
     }
-
+    
+    return filled_costmap;
+}
 
     std::vector<float> dilateToFillUnknown(
     const std::vector<float>& costmap,
