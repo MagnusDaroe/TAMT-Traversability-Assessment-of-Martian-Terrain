@@ -13,7 +13,8 @@
 #include <vector>
 #include <memory>
 #include <limits>
-#include <fstream>
+#include <cstddef>
+#include <fstream> //<-- only used for outputting testing files
 
 class Costmaps : public rclcpp::Node
 {
@@ -156,6 +157,18 @@ public:
             10
         );
 
+        // Create publisher for roughness costmap
+        costmap_roughness_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+            "/tamt/costmap/roughness",
+            10
+        );
+
+        // Create publisher for roughness visualization in RViz2
+        costmap_roughness_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/tamt/costmap/roughness_viz",
+            10
+        );
+
         // Create publisher for per-pixel costs
         cost_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
             "/tamt/costmap/surface_normals/cost_image",
@@ -238,12 +251,15 @@ private:
             std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, pointcloud_width_, pointcloud_height_, false);
             
             // Process SNE data
-            auto [sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
+            auto [sne_costmap, sne_roughness_costmap,sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
                 surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
             new_sne_data_ = false;
             
             // Publish SNE costmap with CORRECT variable names
             publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
+
+            // Publish roughness costmap
+            publishRoughnessCostmap(sne_roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
 
             // Process segmentation mask data and get costmap
             auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
@@ -907,7 +923,7 @@ private:
         new_sne_data_ = true;
     }
 
-    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> surfaceNormals(const std::vector<float>& pointcloud_rover, 
+    std::tuple<std::vector<float>, std::vector<float>, uint32_t, uint32_t, float, float> surfaceNormals(const std::vector<float>& pointcloud_rover, 
         const std::vector<float>& normals_camera, uint32_t width, uint32_t height,
         const rclcpp::Time& timestamp)
     {
@@ -923,25 +939,28 @@ private:
         auto [averaged_theta_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedGrid(points_with_theta_rover, costmap_metrics_);
         
 
-
-        // Save averaged_theta_grid to CSV (one value per line)
-        {
-            std::ofstream csv_file("averaged_theta_grid.csv");
-            if (csv_file.is_open()) {
-                for (const auto& value : averaged_theta_grid) {
-                    csv_file << value << "\n";
-                }
-                csv_file.close();
-            }
-        }
+        //!should be removed later
+        // // Save averaged_theta_grid to CSV (one value per line)
+        // {
+        //     std::ofstream csv_file("averaged_theta_grid.csv");
+        //     if (csv_file.is_open()) {
+        //         for (const auto& value : averaged_theta_grid) {
+        //             csv_file << value << "\n";
+        //         }
+        //         csv_file.close();
+        //     }
+        // }
 
         // Compute traversability cost for each point based on polar angle
-        std::vector<float> averaged_cost_grid = computeSNETraversabilityCost(averaged_theta_grid);
+        std::vector<float> slope_cost_grid = computeSNETraversabilityCost(averaged_theta_grid);
 
         // !this will probably not work anymore since traversability costs are now in cost grid format
         // publishCosts(traversability_costs);
 
-        return std::make_tuple(averaged_cost_grid, width_cells, height_cells, origin_x, origin_y);
+        // compute the roughness cost
+        std::vector<float> roughness_cost_grid = computeGradientTraversabilityCost(averaged_theta_grid, width_cells, height_cells);
+
+        return std::make_tuple(slope_cost_grid, roughness_cost_grid, width_cells, height_cells, origin_x, origin_y);
     }
 
     std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_rover, 
@@ -1056,6 +1075,263 @@ private:
         
         
         return points_with_normals;
+    }
+
+    // roughness cost function
+    std::vector<float> computeGradientTraversabilityCost(const std::vector<float>& theta_grid,
+                                                     int height, int width) 
+    {
+        // early guard
+        if (height <= 0 || width <= 0) {
+            return {};
+        }
+
+        // Reshape into 2D grid (height x width)
+        std::vector<std::vector<double>> image(static_cast<std::size_t>(height),
+                                            std::vector<double>(static_cast<std::size_t>(width), 0.0));
+
+        // Fill image from theta_grid, with safe bounds checks
+        for (int j = 0; j < height; ++j) {
+            for (int i = 0; i < width; ++i) {
+                int index = j * width + i; // signed arithmetic
+                if (index >= 0 && static_cast<std::size_t>(index) < theta_grid.size()) {
+                    image[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
+                        static_cast<double>(theta_grid[static_cast<std::size_t>(index)]);
+                }
+                else {
+                    // set image[j][i] as 255.0 if out of bounds
+                    image[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] = 255.0;
+                }
+            }
+        }
+
+        // Dilated gradient map calculation
+        std::vector<std::vector<double>> scaled_image = scaling(image);
+        std::vector<std::vector<double>> dilated_image = dilate(scaled_image, height, width, 1);
+        dilated_image = zero_dilation(dilated_image, height, width, 2);
+        std::vector<std::vector<double>> dilated_gradient = gradient_magnitude(dilated_image);
+        std::vector<std::vector<double>> dilated_magnitude = zero_dilation(dilated_gradient, height, width, 2);
+
+        // Scale with sigmoid and then mean within radius
+        dilated_magnitude = sigmoid_scaling(dilated_magnitude, 40, 0.06, 0, 255);
+        dilated_magnitude = mean_within_radius(dilated_magnitude, 2);
+
+        // Flatten result back to 1D vector (preserve theta_grid.size() as original)
+        std::vector<float> grid_costs(theta_grid.size(), 0.0f);
+        for (int j = 0; j < height; ++j) {
+            for (int i = 0; i < width; ++i) {
+                int index = j * width + i;
+                if (index >= 0 && static_cast<std::size_t>(index) < grid_costs.size()) {
+                    grid_costs[static_cast<std::size_t>(index)] =
+                        static_cast<float>(dilated_magnitude[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)]);
+                }
+                // else leave grid_costs entry as default 0.0f
+            }
+        }
+
+        return grid_costs;
+    }
+
+    // Function to dilate image
+    std::vector<std::vector<double>> dilate(const std::vector<std::vector<double>>& image, int height, int width, int iterations = 1) {
+        std::vector<std::vector<double>> dilated_image = image;
+        
+        for (int iter = 0; iter < iterations; iter++) {
+            std::vector<std::vector<double>> reference_image = dilated_image;
+            
+            for (int i = 1; i < width - 1; i++) {
+                for (int j = 1; j < height - 1; j++) {
+                    if (reference_image[j][i] == 255) {
+                        std::vector<double> neighborhood = {
+                            reference_image[j-1][i-1], reference_image[j-1][i], reference_image[j-1][i+1],
+                            reference_image[j][i-1], reference_image[j][i+1],
+                            reference_image[j+1][i-1], reference_image[j+1][i], reference_image[j+1][i+1]
+                        };
+                        
+                        int count = 0;
+                        double sum = 0;
+                        for (double value : neighborhood) {
+                            if (value < 255) {
+                                count++;
+                                sum += value;
+                            }
+                        }
+                        
+                        if (count > 0) {
+                            dilated_image[j][i] = sum / count;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return dilated_image;
+    }
+
+    // Function to perform zero dilation
+    std::vector<std::vector<double>> zero_dilation(const std::vector<std::vector<double>>& image, int height, int width, int iterations = 1) {
+        std::vector<std::vector<double>> dilated_image = image;
+        
+        for (int iter = 0; iter < iterations; iter++) {
+            std::vector<std::vector<double>> reference_image = dilated_image;
+            
+            for (int i = 1; i < width - 1; i++) {
+                for (int j = 1; j < height - 1; j++) {
+                    if (dilated_image[j][i] != 255) {
+                        std::vector<double> neighborhood = {
+                            reference_image[j-1][i-1], reference_image[j-1][i], reference_image[j-1][i+1],
+                            reference_image[j][i-1], reference_image[j][i+1],
+                            reference_image[j+1][i-1], reference_image[j+1][i], reference_image[j+1][i+1]
+                        };
+                        
+                        for (double value : neighborhood) {
+                            if (value == 255) {
+                                dilated_image[j][i] = 255;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return dilated_image;
+    }
+
+    // Function to calculate mean within radius
+    std::vector<std::vector<double>> mean_within_radius(const std::vector<std::vector<double>>& image, int radius = 1) {
+        int height = image.size();
+        int width = image[0].size();
+        
+        // Pad the image
+        int padded_height = height + 2 * radius;
+        int padded_width = width + 2 * radius;
+        std::vector<std::vector<double>> padded_image(padded_height, std::vector<double>(padded_width));
+        
+        // Edge padding
+        for (int j = 0; j < padded_height; j++) {
+            for (int i = 0; i < padded_width; i++) {
+                int orig_j = std::min(std::max(j - radius, 0), height - 1);
+                int orig_i = std::min(std::max(i - radius, 0), width - 1);
+                padded_image[j][i] = image[orig_j][orig_i];
+            }
+        }
+        
+        std::vector<std::vector<double>> mean_image = padded_image;
+        
+        for (int i = radius; i < padded_width - radius; i++) {
+            for (int j = radius; j < padded_height - radius; j++) {
+                double sum = 0;
+                int count = 0;
+                
+                for (int dj = -radius; dj <= radius; dj++) {
+                    for (int di = -radius; di <= radius; di++) {
+                        sum += padded_image[j + dj][i + di];
+                        count++;
+                    }
+                }
+                
+                mean_image[j][i] = sum / count;
+            }
+        }
+        
+        // Remove padding
+        std::vector<std::vector<double>> result(height, std::vector<double>(width));
+            for (int j = 0; j < height; j++) {
+                for (int i = 0; i < width; i++) {
+                    result[j][i] = mean_image[j + radius][i + radius];
+                }
+            }
+            
+        return result;
+    }
+
+    // Linear scaling function
+    //TODO set old_min and old_max based on observed data range
+    std::vector<std::vector<double>> scaling(const std::vector<std::vector<double>>& image, double old_min = 0, double old_max = 1.57, 
+                                double new_min = 0, double new_max = 255) {
+        int height = image.size();
+        int width = image[0].size();
+        std::vector<std::vector<double>> scaled_image(height, std::vector<double>(width));
+        
+        for (int j = 0; j < height; j++) {
+            for (int i = 0; i < width; i++) {
+                if (image[j][i] == 0) {
+                    scaled_image[j][i] = 0;
+                } else {
+                    scaled_image[j][i] = (image[j][i] - old_min) / (old_max - old_min) * (new_max - new_min) + new_min;
+                }
+            }
+        }
+        
+        return scaled_image;
+    }
+
+    // Sigmoid scaling function
+    std::vector<std::vector<double>> sigmoid_scaling(const std::vector<std::vector<double>>& image, double midpoint, double steepness,
+                                        double new_min = 0, double new_max = 255) {
+        int height = image.size();
+        int width = image[0].size();
+        std::vector<std::vector<double>> scaled_image(height, std::vector<double>(width));
+        
+        for (int j = 0; j < height; j++) {
+            for (int i = 0; i < width; i++) {
+                if (image[j][i] == 0) {
+                    scaled_image[j][i] = 0;
+                } else {
+                    scaled_image[j][i] = new_min + (new_max - new_min) / (1 + exp(-steepness * (image[j][i] - midpoint)));
+                }
+            }
+        }
+        
+        return scaled_image;
+    }
+
+    // Function to calculate gradient magnitude
+    std::vector<std::vector<double>> gradient_magnitude(const std::vector<std::vector<double>>& image) {
+        int height = image.size();
+        int width = image[0].size();
+        std::vector<std::vector<double>> magnitude(height, std::vector<double>(width, 0));
+        
+        for (int j = 1; j < height - 1; j++) {
+            for (int i = 1; i < width - 1; i++) {
+                double dx = (image[j][i+1] - image[j][i-1]) / 2.0;
+                double dy = (image[j+1][i] - image[j-1][i]) / 2.0;
+                magnitude[j][i] = sqrt(dx * dx + dy * dy);
+            }
+        }
+        
+        return magnitude;
+    }
+
+    // Function to reshape flat data into 2D grid
+        std::vector<std::vector<double>> reshape(
+            const std::vector<double>& flat_data,
+            int height,
+            int width)
+    {
+        // Handle invalid dimensions safely
+        if (height <= 0 || width <= 0)
+            return {};
+
+        std::vector<std::vector<double>> reshaped(height, std::vector<double>(width));
+
+        const std::size_t total = flat_data.size();
+
+        for (int j = 0; j < height; ++j) {
+            for (int i = 0; i < width; ++i) {
+
+                // Compute index in size_t to avoid overflow/warning
+                std::size_t index = static_cast<std::size_t>(j) * width
+                                + static_cast<std::size_t>(i);
+
+                if (index < total) {
+                    reshaped[j][i] = flat_data[index];
+                }
+            }
+        }
+
+        return reshaped;
     }
 
     // - - - - - - - - - - - Cost Map Functions - - - - - - - - - - -
@@ -1645,6 +1921,116 @@ private:
         // Publish the visualization costmap
         costmap_sne_viz_pub_->publish(viz_msg);
     }
+
+    void publishRoughnessCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                           const rclcpp::Time& timestamp)
+    {
+        // Create Costmap message
+        auto costmap_msg = nav2_msgs::msg::Costmap();
+        
+        // Set header
+        costmap_msg.header.stamp = timestamp;
+        costmap_msg.header.frame_id = "map"; 
+        
+        // Set metadata
+        costmap_msg.metadata.size_x = height_cells;
+        costmap_msg.metadata.size_y = width_cells;
+        costmap_msg.metadata.resolution = internal_resolution_;
+        
+        // Set origin (position of cell (0,0) in the map frame)
+        costmap_msg.metadata.origin.position.x = origin_x;
+        costmap_msg.metadata.origin.position.y = origin_y;
+        costmap_msg.metadata.origin.position.z = 0;
+        
+        // Keep initial orientation X foward, Y left, Z up
+        costmap_msg.metadata.origin.orientation.x = 0;
+        costmap_msg.metadata.origin.orientation.y = 0;
+        costmap_msg.metadata.origin.orientation.z = -0.7071068;
+        costmap_msg.metadata.origin.orientation.w = 0.7071068;
+        
+        // Allocate data array
+        costmap_msg.data.resize(width_cells * height_cells);
+        
+        // Convert averaged costs directly to uint8_t (already in 0-255 range)
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {
+            float cost = averaged_grid[i];
+            
+            // Costs are already in 0-255 range from createAveragedGrid
+            // Just clamp and convert to uint8_t
+            if (cost >= 255.0f)
+            {
+                costmap_msg.data[i] = 255;
+            }
+            else if (cost <= 0.0f)
+            {
+                costmap_msg.data[i] = 0;
+            }
+            else
+            {
+                costmap_msg.data[i] = static_cast<uint8_t>(cost);
+            }
+        }
+        
+        // Publish the costmap
+        costmap_roughness_pub_->publish(costmap_msg);
+        
+        // Also publish as OccupancyGrid for RViz2 visualization
+        publishRoughnessCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        
+        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
+    }
+
+    void publishRoughnessCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                              const rclcpp::Time& timestamp)
+    {
+        // Create OccupancyGrid message for RViz2 visualization
+        auto viz_msg = nav_msgs::msg::OccupancyGrid();
+        
+        // Set header
+        viz_msg.header.stamp = timestamp;
+        viz_msg.header.frame_id = "map";
+        
+        // Set metadata
+        viz_msg.info.width = width_cells;
+        viz_msg.info.height = height_cells;
+        viz_msg.info.resolution = internal_resolution_;
+        
+        // Origin position in rover frame 2D
+        viz_msg.info.origin.position.x = origin_x;
+        viz_msg.info.origin.position.y = origin_y;
+        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
+        
+        // -90 degrees around Z axis
+        viz_msg.info.origin.orientation.x = 0;
+        viz_msg.info.origin.orientation.y = 0;
+        viz_msg.info.origin.orientation.z = -0.7071068;
+        viz_msg.info.origin.orientation.w = 0.7071068; 
+        
+        // Allocate data array
+        viz_msg.data.resize(width_cells * height_cells);
+        
+        // Convert costs to OccupancyGrid format
+        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
+        // Scale our 0-255 costs to 0-100 range
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {
+            float cost = averaged_grid[i];
+            
+            if (averaged_grid[i] >= 255.0f)
+            {
+                viz_msg.data[i] = -1; // Unknown
+            }
+            else
+            {
+                // Scale from 0-255 to 0-100
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
+            }
+        }
+        
+        // Publish the visualization costmap
+        costmap_roughness_viz_pub_->publish(viz_msg);
+    }
     
 
      void publishCombinedCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
@@ -1771,6 +2157,8 @@ private:
     // Publishers
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_sne_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sne_viz_pub_;
+    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_roughness_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_roughness_viz_pub_;
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_segmentation_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_segmentation_viz_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr cost_image_pub_;
