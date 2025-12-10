@@ -13,3 +13,7 @@ yolo11m-seg.pt
 yolo11n-seg.pt
 sanity_data/ 
 tempCodeRunnerFile.*
+
+# Python bytecode
+__pycache__/
+*.pyc
