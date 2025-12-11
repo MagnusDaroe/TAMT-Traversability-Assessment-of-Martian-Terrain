@@ -287,7 +287,7 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
             }
 
-            // // Fill holes with convex hull method
+            // Fill holes with convex hull method
             dilated_costmap = fillHolesWithConvexHull(
                 dilated_costmap,        // existing costmap
                 pointcloud_rover,       // 3D points
@@ -307,7 +307,7 @@ private:
             }
 
             // Combine Cost maps
-            std::vector<float> combined_costmap = combineCostMaps(sne_costmap, dilated_costmap);
+            std::vector<float> combined_costmap = combineCostMaps(sne_costmap, roughness_costmap, dilated_costmap);
             
             // Downscale
             auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(combined_costmap, seg_width_cells, seg_height_cells, internal_resolution_, output_resolution_);
@@ -1059,83 +1059,27 @@ private:
 
     // - - - - - - - - - - - Cost Map Functions - - - - - - - - - - -
 
-    // std::vector<float> combineCostMaps(
-    // const std::vector<float>& sne_costmap, const std::vector<float>& roughness_costmap, const std::vector<float>& seg_costmap)
-    // {
-    //     // Ensure both costmaps have the same dimensions
-    //     if (sne_costmap.size() != seg_costmap.size() || sne_costmap.size() != roughness_costmap.size())
-    //     {
-    //         RCLCPP_ERROR(this->get_logger(), 
-    //                      "Costmap size mismatch! SNE size: %zu, Segmentation size: %zu, Roughness size: %zu",
-    //                      sne_costmap.size(), seg_costmap.size(), roughness_costmap.size());
-    //         return std::vector<float>();
-    //     }
-
-    //     size_t num_cells = sne_costmap.size();
-    //     std::vector<float> combined_costmap(num_cells);
-
-    //     // Combine costmaps by taking the maximum cost at each cell
-    //     for (size_t i = 0; i < num_cells; ++i)
-    //     {
-    //         // Combine by weighted average, treating 255 as invalid
-    //         bool has_sne = sne_costmap[i] < 255.0f && sne_costmap[i] >= 0.0f;
-    //         bool has_seg = seg_costmap[i] < 255.0f && seg_costmap[i] >= 0.0f;
-    //         bool has_rough = roughness_costmap[i] < 255.0f && roughness_costmap[i] >= 0.0f;
-
-    //         // Count how many valid values we have
-    //         int valid_count = (has_sne ? 1 : 0) + (has_seg ? 1 : 0) + (has_rough ? 1 : 0);
-
-    //         if (valid_count == 0)
-    //         {
-    //             // No valid data for this cell
-    //             combined_costmap[i] = 255.0f;
-    //         }
-    //         else if (valid_count == 3)
-    //         {
-    //             // All three have valid data - use weighted average
-    //             combined_costmap[i] = (weight_sne_ * sne_costmap[i] + 
-    //                                    weight_segmentation_ * seg_costmap[i] + 
-    //                                    weight_roughness_ * roughness_costmap[i]) / 
-    //                                   (weight_sne_ + weight_segmentation_ + weight_roughness_);
-    //         }
-    //         else
-    //         {
-    //             // Only some have valid data - weighted average of valid ones only
-    //             float sum = 0.0f;
-    //             float weight_sum = 0.0f;
-                
-    //             if (has_sne)
-    //             {
-    //                 sum += weight_sne_ * sne_costmap[i];
-    //                 weight_sum += weight_sne_;
-    //             }
-    //             if (has_seg)
-    //             {
-    //                 sum += weight_segmentation_ * seg_costmap[i];
-    //                 weight_sum += weight_segmentation_;
-    //             }
-    //             if (has_rough)
-    //             {
-    //                 sum += weight_roughness_ * roughness_costmap[i];
-    //                 weight_sum += weight_roughness_;
-    //             }
-                
-    //             combined_costmap[i] = sum / weight_sum;
-    //         }
-    //     }
-
-    //     return combined_costmap;
-    // }
-
     std::vector<float> combineCostMaps(
-    const std::vector<float>& sne_costmap,  const std::vector<float>& seg_costmap)
+    const std::vector<float>& sne_costmap, const std::vector<float>& roughness_costmap, const std::vector<float>& seg_costmap)
     {
-        // Ensure both costmaps have the same dimensions
-        if (sne_costmap.size() != seg_costmap.size())
+        // Validate weights sum to approximately 1.0
+        float weight_sum = weight_sne_ + weight_segmentation_ + weight_roughness_;
+        const float WEIGHT_TOLERANCE = 0.01f;
+        
+        if (std::abs(weight_sum - 1.0f) > WEIGHT_TOLERANCE)
         {
             RCLCPP_ERROR(this->get_logger(), 
-                         "Costmap size mismatch! SNE size: %zu, Segmentation size: %zu",
-                         sne_costmap.size(), seg_costmap.size());
+                "Weight sum validation failed: SNE(%.2f) + Segmentation(%.2f) + Roughness(%.2f) = %.2f (expected 1.0)",
+                weight_sne_, weight_segmentation_, weight_roughness_, weight_sum);
+            return std::vector<float>();
+        }
+
+        // Ensure both costmaps have the same dimensions
+        if (sne_costmap.size() != seg_costmap.size() || sne_costmap.size() != roughness_costmap.size())
+        {
+            RCLCPP_ERROR(this->get_logger(), 
+                         "Costmap size mismatch! SNE size: %zu, Segmentation size: %zu, Roughness size: %zu",
+                         sne_costmap.size(), seg_costmap.size(), roughness_costmap.size());
             return std::vector<float>();
         }
 
@@ -1145,7 +1089,15 @@ private:
         // Combine costmaps by taking the maximum cost at each cell
         for (size_t i = 0; i < num_cells; ++i)
         {
-           combined_costmap[i] = (sne_costmap[i]+ seg_costmap[i]) / 2.0f;
+            // Combine by weighted average, treating 255 as invalid
+            bool has_sne = sne_costmap[i] < 255.0f && sne_costmap[i] >= 0.0f;
+            bool has_seg = seg_costmap[i] < 255.0f && seg_costmap[i] >= 0.0f;
+            bool has_rough = roughness_costmap[i] < 255.0f && roughness_costmap[i] >= 0.0f;
+
+            combined_costmap[i] = (has_sne * weight_sne_ * sne_costmap[i] + 
+                                       has_seg * weight_segmentation_ * seg_costmap[i] + 
+                                       has_rough * weight_roughness_ * roughness_costmap[i]) / 
+                                      (has_sne * weight_sne_ + has_seg * weight_segmentation_ + has_rough * weight_roughness_);
         }
 
         return combined_costmap;
