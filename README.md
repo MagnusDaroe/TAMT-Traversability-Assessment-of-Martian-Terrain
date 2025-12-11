@@ -21,20 +21,28 @@ Welcome to the TAMT(Traversability-Assessment-of-Martian-Terrain) ROS2 workspace
 
 # Environment Setup
 1. Clone the repository
-```cd ~```
-```git clone git clone git@github.com:MagnusDaroe/TAMT-Traversability-Assessment-of-Martian-Terrain.git tamt ```
-```cd tamt```
+```bash
+cd ~
+git clone git clone git@github.com:MagnusDaroe/TAMT-Traversability-Assessment-of-Martian-Terrain.git tamt
+cd tamt
+```
 
 2. Setup virtual environment and dependencies
-```./setup_venv.sh```
-```./setup_env.sh```
+```bash
+./setup_venv.sh
+./setup_env.sh
+```
 
 3. Build the workspace
-```colcon build```
-```source install/setup.bash```
+```bash
+colcon build
+source install/setup.bash
+```
 
 6. Launch the costmap module
-```ros2 launch cost_module costmap.launch.py```
+```bash
+ros2 launch cost_module costmap.launch.py
+```
 
 # Configuration Overview
 
