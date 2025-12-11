@@ -287,7 +287,7 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
             }
 
-            // // Fill holes with convex hull method
+            // Fill holes with convex hull method
             dilated_costmap = fillHolesWithConvexHull(
                 dilated_costmap,        // existing costmap
                 pointcloud_rover,       // 3D points
@@ -307,7 +307,7 @@ private:
             }
 
             // Combine Cost maps
-            std::vector<float> combined_costmap = combineCostMaps(sne_costmap, dilated_costmap);
+            std::vector<float> combined_costmap = combineCostMaps(sne_costmap, roughness_costmap, dilated_costmap);
             
             // Downscale
             auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(combined_costmap, seg_width_cells, seg_height_cells, internal_resolution_, output_resolution_);
@@ -1073,7 +1073,7 @@ private:
                 weight_sne_, weight_segmentation_, weight_roughness_, weight_sum);
             return std::vector<float>();
         }
-        
+
         // Ensure both costmaps have the same dimensions
         if (sne_costmap.size() != seg_costmap.size() || sne_costmap.size() != roughness_costmap.size())
         {
