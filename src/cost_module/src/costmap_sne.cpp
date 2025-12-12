@@ -1100,6 +1100,8 @@ private:
         
         std::vector<float> dilated_gradient = gradient_magnitude(dilated_image, height, width);
 
+        dilated_gradient = mean_within_radius(dilated_gradient, height, width, 1);
+
         std::vector<float> gradient = dilate(dilated_gradient, height, width, 1, true);
 
         std::vector<float> scaled_gradient = sigmoid_scaling(gradient, 40, 0.06, 0, 255);
