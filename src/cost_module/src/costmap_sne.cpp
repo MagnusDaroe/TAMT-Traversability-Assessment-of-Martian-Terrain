@@ -45,10 +45,12 @@ public:
         this->declare_parameter("costmap.segmentation.dilation_enabled", false);
         this->declare_parameter("costmap.segmentation.dilation_kernel_size", 3);
         this->declare_parameter("costmap.segmentation.dilation_min_confidence", 0.7);
+        this->declare_parameter("costmap.confidence_dampening", 1.0);
 
         dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
         dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
         dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
+        confidence_dampening_ = this->get_parameter("costmap.confidence_dampening").as_double();
 
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
@@ -251,7 +253,7 @@ private:
             std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, pointcloud_width_, pointcloud_height_, false);
             
             // Process SNE data
-            auto [sne_costmap, sne_roughness_costmap,sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
+            auto [sne_costmap, roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
                 surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_, timestamp);
             new_sne_data_ = false;
             
@@ -259,7 +261,7 @@ private:
             publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
 
             // Publish roughness costmap
-            publishRoughnessCostmap(sne_roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
+            publishRoughnessCostmap(roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
 
             // Process segmentation mask data and get costmap
             auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
@@ -835,13 +837,11 @@ private:
                 {
                     risk = it->second;
                 }
-
+                float risk_weighted = risk/(std::pow(confidence, confidence_dampening_));
                 // Compute cost: C = risk * confidence * 255
-                float confidence_weight = -0.5*confidence + 1.5f;
-                float x = std::clamp(risk * confidence_weight, 0.0f, 1.0f);
-                const float a = 15.0f; // steepness
-                const float b = 0.3f;  // midpoint
-                float sigmoid = 1.0f / (1.0f + std::exp(-a * (x - b)));
+                const float a = 10.0f; // steepness
+                const float b = 0.5f;  // midpoint
+                float sigmoid = 1.0f / (1.0f + std::exp(-a * ((risk_weighted) - b)));
                 cost = sigmoid * 255.0f;
             
                 // Clamp to valid range
@@ -927,10 +927,21 @@ private:
         const std::vector<float>& normals_camera, uint32_t width, uint32_t height,
         const rclcpp::Time& timestamp)
     {
-        std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height, true);
+        std::vector<float> normals_global = transformToRoverFrame(normals_camera, width, height, true);
+
+        // Flip normals with negative nz values
+        for (size_t i = 0; i < normals_global.size(); i += 3)
+        {
+            if (normals_global[i + 2] < 0)  // Check if nz < 0
+            {
+                normals_global[i + 0] *= -1.0f;  // Flip nx
+                normals_global[i + 1] *= -1.0f;  // Flip ny
+                normals_global[i + 2] *= -1.0f;  // Flip nz
+            }
+        }
 
         // Combine pointcloud with normals
-        std::vector<float> points_with_normals_rover = combinePointcloudWithNormals(pointcloud_rover, normals_rover, width, height);
+        std::vector<float> points_with_normals_rover = combinePointcloudWithNormals(pointcloud_rover, normals_global, width, height);
         
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
@@ -1022,7 +1033,7 @@ private:
     }
 
     std::vector<float> combinePointcloudWithNormals(const std::vector<float>& pointcloud_rover, const std::vector<float>& normals_rover,
-                                                     uint32_t width, uint32_t height)
+                                                    uint32_t width, uint32_t height)
     {
         // Ensure pointcloud size matches normals size
         if (sync_pointcloud_->width != width || sync_pointcloud_->height != height)
@@ -1081,257 +1092,291 @@ private:
     std::vector<float> computeGradientTraversabilityCost(const std::vector<float>& theta_grid,
                                                      int height, int width) 
     {
-        // early guard
-        if (height <= 0 || width <= 0) {
-            return {};
-        }
-
-        // Reshape into 2D grid (height x width)
-        std::vector<std::vector<double>> image(static_cast<std::size_t>(height),
-                                            std::vector<double>(static_cast<std::size_t>(width), 0.0));
-
-        // Fill image from theta_grid, with safe bounds checks
-        for (int j = 0; j < height; ++j) {
-            for (int i = 0; i < width; ++i) {
-                int index = j * width + i; // signed arithmetic
-                if (index >= 0 && static_cast<std::size_t>(index) < theta_grid.size()) {
-                    image[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
-                        static_cast<double>(theta_grid[static_cast<std::size_t>(index)]);
-                }
-                else {
-                    // set image[j][i] as 255.0 if out of bounds
-                    image[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] = 255.0;
-                }
-            }
-        }
-
         // Dilated gradient map calculation
-        std::vector<std::vector<double>> scaled_image = scaling(image);
-        std::vector<std::vector<double>> dilated_image = dilate(scaled_image, height, width, 1);
-        dilated_image = zero_dilation(dilated_image, height, width, 2);
-        std::vector<std::vector<double>> dilated_gradient = gradient_magnitude(dilated_image);
-        std::vector<std::vector<double>> dilated_magnitude = zero_dilation(dilated_gradient, height, width, 2);
+        std::vector<float> scaled_image = scaling(theta_grid, height, width);
+        
+        
+        std::vector<float> dilated_image = dilate(scaled_image, height, width, 2, false);
+        
+        std::vector<float> dilated_gradient = gradient_magnitude(dilated_image, height, width);
 
-        // Scale with sigmoid and then mean within radius
-        dilated_magnitude = sigmoid_scaling(dilated_magnitude, 40, 0.06, 0, 255);
-        dilated_magnitude = mean_within_radius(dilated_magnitude, 2);
+        std::vector<float> gradient = dilate(dilated_gradient, height, width, 1, true);
 
-        // Flatten result back to 1D vector (preserve theta_grid.size() as original)
-        std::vector<float> grid_costs(theta_grid.size(), 0.0f);
-        for (int j = 0; j < height; ++j) {
-            for (int i = 0; i < width; ++i) {
-                int index = j * width + i;
-                if (index >= 0 && static_cast<std::size_t>(index) < grid_costs.size()) {
-                    grid_costs[static_cast<std::size_t>(index)] =
-                        static_cast<float>(dilated_magnitude[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)]);
-                }
-                // else leave grid_costs entry as default 0.0f
-            }
-        }
+        std::vector<float> scaled_gradient = sigmoid_scaling(gradient, 40, 0.06, 0, 255);
 
-        return grid_costs;
+        return dilated_gradient;
     }
 
-    // Function to dilate image
-    std::vector<std::vector<double>> dilate(const std::vector<std::vector<double>>& image, int height, int width, int iterations = 1) {
-        std::vector<std::vector<double>> dilated_image = image;
+    // Function to dilate image (vectorized version with multiple iterations)
+    // dilate_255: if true, dilates 255 values into non-255 neighbors
+    //             if false, dilates non-255 values into 255 neighbors
+    std::vector<float> dilate(const std::vector<float>& image, int height, int width, int iterations = 1, bool dilate_255 = false) {
+        std::vector<float> dilated_image = image;  // Start with copy of original image
+        
+        RCLCPP_INFO(this->get_logger(), "Starting %d dilation iteration(s) on image of size %dx%d (dilate_255=%s)", 
+                    iterations, width, height, dilate_255 ? "true" : "false");
+        RCLCPP_INFO(this->get_logger(), "Image size: %zu", image.size());
+        RCLCPP_INFO(this->get_logger(), "Width: %d, Height: %d", width, height);
         
         for (int iter = 0; iter < iterations; iter++) {
-            std::vector<std::vector<double>> reference_image = dilated_image;
+            // Create temporary output for this iteration - copy current state
+            std::vector<float> temp_image = dilated_image;
             
-            for (int i = 1; i < width - 1; i++) {
-                for (int j = 1; j < height - 1; j++) {
-                    if (reference_image[j][i] == 255) {
-                        std::vector<double> neighborhood = {
-                            reference_image[j-1][i-1], reference_image[j-1][i], reference_image[j-1][i+1],
-                            reference_image[j][i-1], reference_image[j][i+1],
-                            reference_image[j+1][i-1], reference_image[j+1][i], reference_image[j+1][i+1]
-                        };
-                        
-                        int count = 0;
-                        double sum = 0;
-                        for (double value : neighborhood) {
-                            if (value < 255) {
-                                count++;
-                                sum += value;
+            for (int x = 0; x < width; x++) {
+                for (int y = 0; y < height; y++) {
+                    int idx = x * height + y;
+                    
+                    if (dilate_255) {
+                        // Set all edge pixels to 255 first (before any dilation logic)
+                        if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
+                            temp_image[idx] = 255.0f;
+                        }
+                        // DILATE 255 INTO NON-255: If any neighbor is 255, replace current pixel
+                        else if (dilated_image[idx] != 255) {
+                            // Check 8-connected neighbors
+                            std::vector<int> neighbor_indices = {
+                                (x - 1) * height + (y - 1), (x - 1) * height + y, (x - 1) * height + (y + 1),
+                                x * height + (y - 1),                             x * height + (y + 1),
+                                (x + 1) * height + (y - 1), (x + 1) * height + y, (x + 1) * height + (y + 1)
+                            };
+                            // If any neighbor is 255, set this pixel to 255
+                            for (int neighbor_idx : neighbor_indices) {
+                                if (dilated_image[neighbor_idx] == 255) {
+                                    temp_image[idx] = 255.0f;
+                                    break;
+                                }
                             }
                         }
+                    } else {
+                        // Skip edge pixels for dilate_255 = false
+                        if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
+                            continue;
+                        }
                         
-                        if (count > 0) {
-                            dilated_image[j][i] = sum / count;
+                        // ORIGINAL BEHAVIOR: If current pixel is 255, compute mean of non-255 neighbors
+                        if (dilated_image[idx] == 255) {
+                            std::vector<float> neighbor_values = {
+                                dilated_image[(x - 1) * height + (y - 1)], 
+                                dilated_image[(x - 1) * height + y], 
+                                dilated_image[(x - 1) * height + (y + 1)],
+                                dilated_image[x * height + (y - 1)],                     
+                                dilated_image[x * height + (y + 1)],
+                                dilated_image[(x + 1) * height + (y - 1)], 
+                                dilated_image[(x + 1) * height + y], 
+                                dilated_image[(x + 1) * height + (y + 1)]
+                            };
+                            
+                            float sum = 0.0f;
+                            int count = 0;
+                            for(float val : neighbor_values) {
+                                if (val != 255.0f) {
+                                    sum += val;
+                                    count++;
+                                }
+                            }
+                            
+                            if (count > 0) {
+                                temp_image[idx] = sum / count; // Assign mean of neighbors
+                            } else {
+                                temp_image[idx] = 255.0f; // No valid neighbors, keep as 255
+                            }
                         }
                     }
                 }
             }
+            
+            // Update dilated_image for next iteration
+            dilated_image = temp_image;
+            
+            RCLCPP_INFO(this->get_logger(), "Completed dilation iteration %d/%d", iter + 1, iterations);
         }
         
         return dilated_image;
     }
 
-    // Function to perform zero dilation
-    std::vector<std::vector<double>> zero_dilation(const std::vector<std::vector<double>>& image, int height, int width, int iterations = 1) {
-        std::vector<std::vector<double>> dilated_image = image;
-        
-        for (int iter = 0; iter < iterations; iter++) {
-            std::vector<std::vector<double>> reference_image = dilated_image;
-            
-            for (int i = 1; i < width - 1; i++) {
-                for (int j = 1; j < height - 1; j++) {
-                    if (dilated_image[j][i] != 255) {
-                        std::vector<double> neighborhood = {
-                            reference_image[j-1][i-1], reference_image[j-1][i], reference_image[j-1][i+1],
-                            reference_image[j][i-1], reference_image[j][i+1],
-                            reference_image[j+1][i-1], reference_image[j+1][i], reference_image[j+1][i+1]
-                        };
-                        
-                        for (double value : neighborhood) {
-                            if (value == 255) {
-                                dilated_image[j][i] = 255;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        return dilated_image;
-    }
-
-    // Function to calculate mean within radius
-    std::vector<std::vector<double>> mean_within_radius(const std::vector<std::vector<double>>& image, int radius = 1) {
-        int height = image.size();
-        int width = image[0].size();
-        
+    // Function to calculate mean within radius (vectorized version, column-major)
+    std::vector<float> mean_within_radius(const std::vector<float>& image, int height, int width, int radius = 1) {
         // Pad the image
         int padded_height = height + 2 * radius;
         int padded_width = width + 2 * radius;
-        std::vector<std::vector<double>> padded_image(padded_height, std::vector<double>(padded_width));
+        std::vector<float> padded_image(padded_height * padded_width);
         
-        // Edge padding
-        for (int j = 0; j < padded_height; j++) {
-            for (int i = 0; i < padded_width; i++) {
-                int orig_j = std::min(std::max(j - radius, 0), height - 1);
-                int orig_i = std::min(std::max(i - radius, 0), width - 1);
-                padded_image[j][i] = image[orig_j][orig_i];
+        // Edge padding - replicate border values
+        for (int x = 0; x < padded_width; x++) {
+            for (int y = 0; y < padded_height; y++) {
+                int padded_idx = x * padded_height + y;  // Column-major indexing
+                
+                // Clamp coordinates to original image bounds
+                int orig_x = std::min(std::max(x - radius, 0), width - 1);
+                int orig_y = std::min(std::max(y - radius, 0), height - 1);
+                int orig_idx = orig_x * height + orig_y;  // Column-major indexing
+                
+                padded_image[padded_idx] = image[orig_idx];
             }
         }
         
-        std::vector<std::vector<double>> mean_image = padded_image;
+        std::vector<float> mean_image(padded_height * padded_width);
         
-        for (int i = radius; i < padded_width - radius; i++) {
-            for (int j = radius; j < padded_height - radius; j++) {
-                double sum = 0;
+        // Calculate mean for each pixel in the padded region
+        for (int x = radius; x < padded_width - radius; x++) {
+            for (int y = radius; y < padded_height - radius; y++) {
+                int padded_idx = x * padded_height + y;  // Column-major indexing
+                
+                // If current pixel is 255, keep it as 255
+                if (padded_image[padded_idx] == 255.0f) {
+                    mean_image[padded_idx] = 255.0f;
+                    continue;
+                }
+                
+                float sum = 0.0f;
                 int count = 0;
                 
-                for (int dj = -radius; dj <= radius; dj++) {
-                    for (int di = -radius; di <= radius; di++) {
-                        sum += padded_image[j + dj][i + di];
-                        count++;
+                // Sum all pixels within radius, ignoring 255 values
+                for (int dx = -radius; dx <= radius; dx++) {
+                    for (int dy = -radius; dy <= radius; dy++) {
+                        int neighbor_idx = (x + dx) * padded_height + (y + dy);
+                        
+                        // Only include non-255 values in the mean
+                        if (padded_image[neighbor_idx] != 255.0f) {
+                            sum += padded_image[neighbor_idx];
+                            count++;
+                        }
                     }
                 }
                 
-                mean_image[j][i] = sum / count;
+                // Compute mean only if there are valid (non-255) neighbors
+                if (count > 0) {
+                    mean_image[padded_idx] = sum / count;
+                } else {
+                    mean_image[padded_idx] = 255.0f;  // If all neighbors are 255, keep as 255
+                }
             }
         }
         
-        // Remove padding
-        std::vector<std::vector<double>> result(height, std::vector<double>(width));
-            for (int j = 0; j < height; j++) {
-                for (int i = 0; i < width; i++) {
-                    result[j][i] = mean_image[j + radius][i + radius];
-                }
+        // Remove padding and extract result
+        std::vector<float> result(height * width);
+        for (int x = 0; x < width; x++) {
+            for (int y = 0; y < height; y++) {
+                int result_idx = x * height + y;  // Column-major indexing
+                int padded_idx = (x + radius) * padded_height + (y + radius);
+                result[result_idx] = mean_image[padded_idx];
             }
-            
+        }
+        
         return result;
     }
 
     // Linear scaling function
-    //TODO set old_min and old_max based on observed data range
-    std::vector<std::vector<double>> scaling(const std::vector<std::vector<double>>& image, double old_min = 0, double old_max = 1.57, 
-                                double new_min = 0, double new_max = 255) {
-        int height = image.size();
-        int width = image[0].size();
-        std::vector<std::vector<double>> scaled_image(height, std::vector<double>(width));
+    // TODO set old_min and old_max based on observed data range
+    std::vector<float> scaling(const std::vector<float>& image, int height, int width, 
+                            double old_min = 0, double old_max = 1.58, 
+                            double new_min = 0, double new_max = 255) {
         
-        for (int j = 0; j < height; j++) {
-            for (int i = 0; i < width; i++) {
-                if (image[j][i] == 0) {
-                    scaled_image[j][i] = 0;
-                } else {
-                    scaled_image[j][i] = (image[j][i] - old_min) / (old_max - old_min) * (new_max - new_min) + new_min;
+        // Create a COPY inside the function to work with
+        std::vector<float> scaled_image = image;
+        
+        // ... all your existing code, but work on scaled_image ...
+                                
+        double input_min = 999999.0;
+        double input_max = -999999.0;
+        for (const auto& val : image) {  // Read from original
+            if (val == 255.0) continue;
+            if (val < input_min) input_min = val;
+            if (val > input_max) input_max = val;
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Input image min: %f, max: %f", input_min, input_max);
+        
+        int pixel_count = width * height;
+        for (int i = 0; i < pixel_count; i++) {
+            if (scaled_image[i] == 255.0f) {
+                scaled_image[i] = 255.0f;
+            } else {
+                scaled_image[i] = (scaled_image[i] - old_min) / (old_max - old_min) * 
+                                (new_max - new_min) + new_min;
+            }
+        }
+
+        // log the min, max, and average values of the scaled image for debugging
+        double min_val = 999999.0;
+        double max_val = -999999.0;
+        double sum_val = 0.0;
+        int count_val = 0;
+        
+        for (int i = 0; i < pixel_count; i++) {
+            if (image[i] != 255.0) {  // Ignore unknown/invalid values
+                if (image[i] < min_val) {
+                min_val = image[i];
                 }
+                if (image[i] > max_val) {
+                max_val = image[i];
+                }
+                sum_val += image[i];
+                count_val++;
+            }
+        }
+        
+        double avg_val = (count_val > 0) ? sum_val / count_val : 0.0;
+        RCLCPP_INFO(this->get_logger(), "Scaled image average: %f", avg_val);
+        RCLCPP_INFO(this->get_logger(), "Scaled image min: %f, max: %f", min_val, max_val);
+        RCLCPP_INFO(this->get_logger(), "HELLO IS ANYTHING WORKING");
+        
+        return scaled_image;
+    }
+
+    // Sigmoid scaling function (vectorized)
+    std::vector<float> sigmoid_scaling(const std::vector<float>& image, 
+                                    double midpoint, double steepness,
+                                    double new_min = 0, double new_max = 255) {
+        std::vector<float> scaled_image(image.size());
+        
+        for (size_t i = 0; i < image.size(); i++) {
+            if (image[i] == 255) {
+                scaled_image[i] = 255;
+            } else {
+                scaled_image[i] = new_min + (new_max - new_min) / (1 + exp(-steepness * (image[i] - midpoint)));
             }
         }
         
         return scaled_image;
     }
 
-    // Sigmoid scaling function
-    std::vector<std::vector<double>> sigmoid_scaling(const std::vector<std::vector<double>>& image, double midpoint, double steepness,
-                                        double new_min = 0, double new_max = 255) {
-        int height = image.size();
-        int width = image[0].size();
-        std::vector<std::vector<double>> scaled_image(height, std::vector<double>(width));
+    // Function to calculate gradient magnitude (vectorized, column-major)
+    std::vector<float> gradient_magnitude(const std::vector<float>& image, int height, int width) {
+        std::vector<float> magnitude(height * width, 255.0f);  // Initialize to 255
         
-        for (int j = 0; j < height; j++) {
-            for (int i = 0; i < width; i++) {
-                if (image[j][i] == 0) {
-                    scaled_image[j][i] = 0;
-                } else {
-                    scaled_image[j][i] = new_min + (new_max - new_min) / (1 + exp(-steepness * (image[j][i] - midpoint)));
+        for (int x = 1; x < width - 1; x++) {
+            for (int y = 1; y < height - 1; y++) {
+                int idx = x * height + y;  // Column-major indexing
+                
+                // If current pixel is 255, keep it as 255
+                if (image[idx] >= 254.5f) {
+                    magnitude[idx] = 255.0f;
+                    continue;
                 }
-            }
-        }
-        
-        return scaled_image;
-    }
-
-    // Function to calculate gradient magnitude
-    std::vector<std::vector<double>> gradient_magnitude(const std::vector<std::vector<double>>& image) {
-        int height = image.size();
-        int width = image[0].size();
-        std::vector<std::vector<double>> magnitude(height, std::vector<double>(width, 0));
-        
-        for (int j = 1; j < height - 1; j++) {
-            for (int i = 1; i < width - 1; i++) {
-                double dx = (image[j][i+1] - image[j][i-1]) / 2.0;
-                double dy = (image[j+1][i] - image[j-1][i]) / 2.0;
-                magnitude[j][i] = sqrt(dx * dx + dy * dy);
+                
+                // Get neighbor indices
+                int idx_right = (x + 1) * height + y;
+                int idx_left = (x - 1) * height + y;
+                int idx_down = x * height + (y + 1);
+                int idx_up = x * height + (y - 1);
+                
+                // Skip if any neighbor is 255
+                if (image[idx_right] >= 254.5f || image[idx_left] >= 254.5f ||
+                    image[idx_down] >= 254.5f || image[idx_up] >= 254.5f) {
+                    magnitude[idx] = 0.0f;  // Set to 0 for borders near obstacles
+                    continue;
+                }
+                
+                // Calculate gradients using central difference
+                float dx = (image[idx_right] - image[idx_left]) / 2.0f;
+                float dy = (image[idx_down] - image[idx_up]) / 2.0f;
+                
+                magnitude[idx] = std::sqrt(dx * dx + dy * dy);
             }
         }
         
         return magnitude;
-    }
-
-    // Function to reshape flat data into 2D grid
-        std::vector<std::vector<double>> reshape(
-            const std::vector<double>& flat_data,
-            int height,
-            int width)
-    {
-        // Handle invalid dimensions safely
-        if (height <= 0 || width <= 0)
-            return {};
-
-        std::vector<std::vector<double>> reshaped(height, std::vector<double>(width));
-
-        const std::size_t total = flat_data.size();
-
-        for (int j = 0; j < height; ++j) {
-            for (int i = 0; i < width; ++i) {
-
-                // Compute index in size_t to avoid overflow/warning
-                std::size_t index = static_cast<std::size_t>(j) * width
-                                + static_cast<std::size_t>(i);
-
-                if (index < total) {
-                    reshaped[j][i] = flat_data[index];
-                }
-            }
-        }
-
-        return reshaped;
     }
 
     // - - - - - - - - - - - Cost Map Functions - - - - - - - - - - -
@@ -2180,6 +2225,7 @@ private:
     uint32_t segmentation_height_;
     std::vector<uint8_t> class_ids_;
     std::vector<float> confidences_;
+    float confidence_dampening_; // exponent for confidence adjustment
 
     int dilation_kernel_size_;
     float dilation_min_confidence_;

@@ -9,4 +9,6 @@ Save rviz2 config file
 # Nice commands
 ros2 run tf2_ros static_transform_publisher 1.709320068 -4.636882782 0.800000012 -0.174203563 0.681054306 0.70024741 -0.124385352 map zed2i_left_camera_optical_frame
 
+ros2 service call tamt/trigger_sync interfaces/srv/TriggerSync
+
 

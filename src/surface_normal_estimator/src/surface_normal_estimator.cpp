@@ -302,12 +302,6 @@ private:
                     ny[i][j] = 0;
                     nz[i][j] = 0;
                 }
-
-                // flips all the normals to point upwards
-                float sign = (ny[i][j] < 0) ? -1.0f : 1.0f;
-                nx[i][j] *= sign;
-                ny[i][j] *= sign;
-                nz[i][j] *= sign;
             }
         }
 
