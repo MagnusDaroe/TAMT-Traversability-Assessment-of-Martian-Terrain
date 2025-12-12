@@ -44,6 +44,33 @@ source install/setup.bash
 ros2 launch cost_module costmap.launch.py
 ```
 
+7. call the server to publish (temporary)
+```bash
+ros2 service call tamt/trigger_sync sync_pkg/srv/TriggerSync
+```
+
+# System Inputs and Outputs Overview
+
+##  System Inputs
+The system processes the following incoming data streams:
+
+- **RGB image** — camera input  
+- **Rover pose** — position and orientation of the rover  
+- **Depth image** — depth information aligned with the camera frame  
+
+---
+
+##  System Outputs
+The following costmap layers are generated and can be visualized in **RViz2**:
+
+- **Roughness Costmap** 
+- **Segmentation Costmap**  
+- **Surface Normal Costmap**  
+- **Combined Costmap** — final weighted fusion of all layers  
+
+![System Diagram](image/image.png)
+
+
 # Configuration Overview
 
 This section summarizes the key parameters used in the system, grouped by their functional categories.  
