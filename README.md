@@ -68,7 +68,7 @@ The following costmap layers are generated and can be visualized in **RViz2**:
 - **Surface Normal Costmap**  
 - **Combined Costmap** — final weighted fusion of all layers  
 
-![System Diagram](image/image.png)
+![System Diagram](images/image.png)
 
 
 # Configuration Overview
