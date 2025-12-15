@@ -1,166 +1,72 @@
-# TAMT-Traversability-Assessment-of-Martian-Terrain
-Welcome to the TAMT(Traversability-Assessment-of-Martian-Terrain) ROS2 package.
+# TAMT - Traversability Assessment of Martian Terrain
 
-# Environment Setup
-1. Clone the repository
+A ROS2 package for real-time traversability analysis using RGB-D camera data and rover pose information.
+
+## Quick Start
+
+1. **Clone the repository**
 ```bash
 cd ~
-git clone git clone git@github.com:MagnusDaroe/TAMT-Traversability-Assessment-of-Martian-Terrain.git tamt
+git clone git@github.com:MagnusDaroe/TAMT-Traversability-Assessment-of-Martian-Terrain.git tamt
 cd tamt
 ```
 
-2. Setup virtual environment and dependencies
+2. **Setup environment**
 ```bash
 ./setup_venv.sh
 ./setup_env.sh
 ```
 
-3. Build the workspace
+3. **Build and source**
 ```bash
 colcon build
 source install/setup.bash
 ```
 
-6. Launch the costmap module
+4. **Launch**
 ```bash
 ros2 launch cost_module tamt.launch.py
 ```
 
-7. call the server to publish (optional) - Can be configured 
+5. **Manual trigger** (optional if `auto_fetch_enabled` is false)
 ```bash
 ros2 service call tamt/trigger_sync interfaces/srv/TriggerSync
 ```
 
-# System Inputs and Outputs Overview
+## System Overview
 
-##  System Inputs
-The system processes the following incoming data streams:
+### Inputs
+- RGB image (camera feed)
+- Rover pose (position and orientation)
+- Depth image (aligned with camera frame)
 
-- **RGB image** — camera input  
-- **Rover pose** — position and orientation of the rover  
-- **Depth image** — depth information aligned with the camera frame  
+### Outputs
+The system generates traversability costmaps visualizable in RViz2:
+- **Roughness Costmap** - terrain irregularity analysis
+- **Segmentation Costmap** - terrain classification based risk
+- **Surface Normal Costmap** - slope and orientation analysis
+- **Combined Costmap** - weighted fusion of all layers (always published)
 
----
+![System Diagram](__docs/images/SystemGraph.png)
 
-##  System Outputs
-The following costmap layers are generated and can be visualized in **RViz2**:
+## Configuration
 
-- **Roughness Costmap** 
-- **Segmentation Costmap**  
-- **Surface Normal Costmap**  
-- **Combined Costmap** — final weighted fusion of all layers  
+All parameters are configured in `cost_module/config/params.yaml`.
 
-![System Diagram](images/image.png)
+### Camera Configuration
+- **Mounting**: Tilt angle, height above ground, static transform (rover → camera)
+- **Optics**: Horizontal/vertical FOV, maximum sensing range
+- **Intrinsics**: Focal lengths (fx, fy), principal point (cx, cy)
+- **Resolution**: Image width and height
 
+### Costmap Settings
+- **Resolution**: Internal processing resolution vs. output resolution
+- **Publishing**: Control individual layer and visualization outputs
+- **Weights**: Relative importance of each layer (must sum to 1.0)
+  - Surface normal estimation weight
+  - Segmentation weight
+  - Roughness weight
 
-# Configuration Overview
-
-This section summarizes the key parameters used in the system, grouped by their functional categories.  
-All values are taken directly from the cost_module's YAML configuration files.
-
----
-
-##  Camera Parameters
-
-| Parameter | Value | Description |
-|----------|--------|-------------|
-| `tilt_angle` | 20.0° | Camera tilt angle relative to the horizontal plane |
-| `fov_x` | 110.0° | Horizontal field of view |
-| `fov_y` | 70.0° | Vertical field of view |
-| `max_distance` | 2.5 m | Maximum sensing range |
-| `height` | 0.43 m | Camera height above ground |
-
----
-
-##  Image Resolution
-
-| Parameter | Value | Description |
-|----------|--------|-------------|
-| `width` | 960 px | Image width |
-| `height` | 540 px | Image height |
-
----
-
-##  Camera Intrinsics
-
-| Parameter | Value | Description |
-|----------|--------|-------------|
-| `fx` | 685.51 | Focal length (x-axis) |
-| `fy` | 189.06 | Focal length (y-axis) |
-| `cx` | 480.00 | Principal point x-coordinate |
-| `cy` | 270.00 | Principal point y-coordinate |
-
----
-
-##  Static Transform (Rover → Camera)
-
-### Translation (meters)
-
-| x | y | z |
-|---|---|---|
-| 0.157499 | 0.059899 | 0.238857 |
-
-### Rotation (quaternion)
-
-| x | y | z | w |
-|---|---|---|---|
-| 0.5 | -0.5 | -0.5 | 0.5 |
-
----
-
-##  Rover Parameters
-
-| Parameter | Value | Description |
-|----------|--------|-------------|
-| `width` | 1.0 m | Rover width |
-| `length` | 1.2 m | Rover length |
-
----
-
-##  Costmap Parameters
-
-| Parameter | Value | Description |
-|----------|--------|-------------|
-| `publish_individual_layers` | true | Publish each costmap layer separately |
-| `publish_visualizations` | true | Enable visualization topics |
-| `internal_resolution` | 0.01 m | Internal processing resolution |
-| `output_resolution` | 0.05 m | Output costmap resolution |
-
-### Costmap Weights (must sum to 1.0)
-
-| Layer | Weight |
-|-------|--------|
-| `weight_sne` | 0.4 |
-| `weight_segmentation` | 0.3 |
-| `weight_roughness` | 0.3 |
-
-### Segmentation Settings
-
-| Parameter | Value |
-|----------|--------|
-| `dilation_enabled` | true |
-| `dilation_kernel_size` | 3 |
-| `dilation_min_confidence` | 0.7 |
-
----
-
-##  Class Risk Values
-
-| Class | Risk |
-|--------|------|
-| soil | 0.2 |
-| bedrock | 0.1 |
-| sand | 0.3 |
-| rocks | 0.9 |
-| hole | 1.0 |
-
----
-
-
-
-
-
-
-
-
-
+### Segmentation Parameters
+- **Class risks**: Risk values for terrain types (soil, bedrock, sand, rocks, holes)
+- **Dilation**: Enable/disable boundary expansion, kernel size, confidence threshold
