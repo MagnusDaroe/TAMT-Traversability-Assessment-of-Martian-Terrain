@@ -15,6 +15,7 @@ find_package(message_filters REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(interfaces REQUIRED)
 
 # After all find_package calls, add:
 include_directories(
@@ -23,12 +24,6 @@ include_directories(
   ${sensor_msgs_INCLUDE_DIRS}
   ${cv_bridge_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
-)
-
-# Generate service files
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/TriggerSync.srv"
-  DEPENDENCIES sensor_msgs geometry_msgs
 )
 
 # uncomment the following section in order to fill in
@@ -65,6 +60,7 @@ ament_target_dependencies(data_synchroniser
   message_filters
   OpenCV
   geometry_msgs
+  interfaces
 )
 
 # This node is a client to trigger the synchronisation service request
@@ -77,11 +73,8 @@ ament_target_dependencies(data_synchroniser_client
   message_filters
   OpenCV
   geometry_msgs
+  interfaces
 )
-
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(data_synchroniser "${cpp_typesupport_target}")
-target_link_libraries(data_synchroniser_client "${cpp_typesupport_target}")
 
 install(TARGETS
   publish_raw_data

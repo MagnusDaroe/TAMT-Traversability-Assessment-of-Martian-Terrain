@@ -17,7 +17,8 @@ find_package(ament_index_cpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(sync_pkg REQUIRED)
+find_package(interfaces REQUIRED)
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -35,13 +36,13 @@ endif()
 include_directories(include)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-# Create the costmap_sne executable
-add_executable(costmap_sne 
-  src/costmap_sne.cpp
+# Create the cost_module executable
+add_executable(cost_module
+  src/cost_module.cpp
 )
 
-# Add dependencies for costmap_sne executable
-ament_target_dependencies(costmap_sne
+# Add dependencies for cost_module executable
+ament_target_dependencies(cost_module
   rclcpp
   sensor_msgs
   geometry_msgs
@@ -49,14 +50,14 @@ ament_target_dependencies(costmap_sne
   nav2_msgs
   tf2
   tf2_geometry_msgs
-  sync_pkg
+  interfaces
 )
 
-target_link_libraries(costmap_sne ${OpenCV_LIBS})
+target_link_libraries(cost_module ${OpenCV_LIBS})
 
 # Install C++ executables
 install(TARGETS
-  costmap_sne
+  cost_module
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -10,6 +10,8 @@ Save rviz2 config file
 # Nice commands
 ros2 run tf2_ros static_transform_publisher 1.709320068 -4.636882782 0.800000012 -0.174203563 0.681054306 0.70024741 -0.124385352 map zed2i_left_camera_optical_frame
 
+ros2 service call tamt/trigger_sync interfaces/srv/TriggerSync
+
 
 # This is a dividing line
 
@@ -46,7 +48,7 @@ ros2 launch cost_module costmap.launch.py
 
 7. call the server to publish (temporary)
 ```bash
-ros2 service call tamt/trigger_sync sync_pkg/srv/TriggerSync
+ros2 service call tamt/trigger_sync interfaces/srv/TriggerSync
 ```
 
 # System Inputs and Outputs Overview

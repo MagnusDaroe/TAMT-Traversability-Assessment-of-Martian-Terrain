@@ -7,13 +7,14 @@
 #include <nav2_msgs/msg/costmap.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <opencv2/opencv.hpp>
-#include "sync_pkg/srv/trigger_sync.hpp"
+#include "interfaces/srv/trigger_sync.hpp"
 #include <tuple>
 #include <algorithm>
 #include <cmath>
 #include <vector>
 #include <memory>
 #include <limits>
+#include <cstddef>
 
 class Costmaps : public rclcpp::Node
 {
@@ -52,6 +53,7 @@ public:
         this->declare_parameter("costmap.weight_sne", 0.4);
         this->declare_parameter("costmap.weight_segmentation", 0.3);
         this->declare_parameter("costmap.weight_roughness", 0.3);
+        this->declare_parameter("costmap.confidence_dampening", 1.0);
 
         dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
         dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
@@ -59,6 +61,7 @@ public:
         weight_sne_ = this->get_parameter("costmap.weight_sne").as_double();
         weight_segmentation_ = this->get_parameter("costmap.weight_segmentation").as_double();
         weight_roughness_ = this->get_parameter("costmap.weight_roughness").as_double();
+        confidence_dampening_ = this->get_parameter("costmap.confidence_dampening").as_double();
 
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
@@ -160,6 +163,7 @@ public:
             "/tamt/costmap/combined",
             10
         );
+        
         if (publish_costmap_visualizations_){
             costmap_combined_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
                 "/tamt/costmap/combined_viz",
@@ -171,8 +175,8 @@ public:
         if (publish_individual_layers_){
             // Create publisher for costmap
             costmap_sne_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
-            "/tamt/costmap/surface_normals",
-            10
+                "/tamt/costmap/surface_normals",
+                10
             );
 
             // Publisher for costmap (nav2_msgs::msg::Costmap)
@@ -180,24 +184,35 @@ public:
                 "/tamt/costmap/segmentation",
                 10
             );
-      
+
+             // Create publisher for roughness costmap
+            costmap_roughness_pub_ = this->create_publisher<nav2_msgs::msg::Costmap>(
+                "/tamt/costmap/roughness",
+                10
+            );
 
             // Publishers for visualization in RViz2
             if (publish_costmap_visualizations_){            
                 costmap_sne_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-                "/tamt/costmap/surface_normals_viz",
-                10
+                    "/tamt/costmap/surface_normals_viz",
+                    10
                 );
 
                 costmap_segmentation_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-                "/tamt/costmap/segmentation_viz",
-                10
+                    "/tamt/costmap/segmentation_viz",
+                    10
+                );
+                
+                // Create publisher for roughness visualization in RViz2
+                costmap_roughness_viz_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+                    "/tamt/costmap/roughness_viz",
+                    10
                 );
             }
         }
         
         // Create service client
-        trigger_sync_client_ = this->create_client<sync_pkg::srv::TriggerSync>("trigger_sync");
+        trigger_sync_client_ = this->create_client<interfaces::srv::TriggerSync>("trigger_sync");
         
         // Create timer that runs every 50ms
         timer_ = this->create_wall_timer(
@@ -253,7 +268,7 @@ private:
             std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, pointcloud_width_, pointcloud_height_, false);
             
             // Process SNE data
-            auto [sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
+            auto [sne_costmap, roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
                 surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_);
             new_sne_data_ = false;
 
@@ -262,6 +277,9 @@ private:
                 publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
             }
            
+
+            // Publish roughness costmap
+            publishRoughnessCostmap(roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
 
             // Process segmentation mask data and get costmap
             auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
@@ -315,7 +333,7 @@ private:
             
             // Trigger sync service call
             // if (trigger_sync_client_->service_is_ready()) {
-            //     auto request = std::make_shared<sync_pkg::srv::TriggerSync::Request>();
+            //     auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
             //     trigger_sync_client_->async_send_request(request,
             //         std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
             // } else {
@@ -373,7 +391,7 @@ private:
         rover_to_global_transform_.setRotation(q);
     }
 
-    void handleSyncResponse(rclcpp::Client<sync_pkg::srv::TriggerSync>::SharedFuture future)
+    void handleSyncResponse(rclcpp::Client<interfaces::srv::TriggerSync>::SharedFuture future)
     {
         auto response = future.get();
         if (response->success) {
@@ -408,7 +426,7 @@ private:
             
             // Create averaged cost grid
             auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = 
-                createAveragedCostGrid(points_with_costs, costmap_metrics_);
+                createAveragedGrid(points_with_costs, costmap_metrics_);
             
             // Create class and confidence grids
             auto [class_grid, confidence_grid] = createClassAndConfidenceGrids(
@@ -814,13 +832,11 @@ private:
                 {
                     risk = it->second;
                 }
-
+                float risk_weighted = risk/(std::pow(confidence, confidence_dampening_));
                 // Compute cost: C = risk * confidence * 255
-                float confidence_weight = -0.5*confidence + 1.5f;
-                float x = std::clamp(risk * confidence_weight, 0.0f, 1.0f);
-                const float a = 15.0f; // steepness
-                const float b = 0.3f;  // midpoint
-                float sigmoid = 1.0f / (1.0f + std::exp(-a * (x - b)));
+                const float a = 10.0f; // steepness
+                const float b = 0.5f;  // midpoint
+                float sigmoid = 1.0f / (1.0f + std::exp(-a * ((risk_weighted) - b)));
                 cost = sigmoid * 255.0f;
             
                 // Clamp to valid range
@@ -902,25 +918,38 @@ private:
         new_sne_data_ = true;
     }
 
-    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> surfaceNormals(const std::vector<float>& pointcloud_rover, 
+    std::tuple<std::vector<float>, std::vector<float>, uint32_t, uint32_t, float, float> surfaceNormals(const std::vector<float>& pointcloud_rover, 
         const std::vector<float>& normals_camera, uint32_t width, uint32_t height)
     {
-        std::vector<float> normals_rover = transformToRoverFrame(normals_camera, width, height, true);
+        std::vector<float> normals_global = transformToRoverFrame(normals_camera, width, height, true);
+
+        // Flip normals with negative nz values
+        for (size_t i = 0; i < normals_global.size(); i += 3)
+        {
+            if (normals_global[i + 2] < 0)  // Check if nz < 0
+            {
+                normals_global[i + 0] *= -1.0f;  // Flip nx
+                normals_global[i + 1] *= -1.0f;  // Flip ny
+                normals_global[i + 2] *= -1.0f;  // Flip nz
+            }
+        }
 
         // Combine pointcloud with normals
-        std::vector<float> points_with_normals_rover = combinePointcloudWithNormals(pointcloud_rover, normals_rover, width, height);
+        std::vector<float> points_with_normals_rover = combinePointcloudWithNormals(pointcloud_rover, normals_global, width, height);
         
         // Compute polar angles from normals and combine with 3D coordinates
         // Output format: [x, y, z, theta] for each point
         std::vector<float> points_with_theta_rover = computePolarAngles(points_with_normals_rover, width, height);
+
+        auto [averaged_theta_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedGrid(points_with_theta_rover, costmap_metrics_);
         
+        // compute the roughness cost
+        std::vector<float> roughness_cost_grid = computeGradientTraversabilityCost(averaged_theta_grid, width_cells, height_cells);
+
         // Compute traversability cost for each point based on polar angle
-        std::vector<float> traversability_costs = computeSNETraversabilityCost(points_with_theta_rover, width, height);
+        std::vector<float> slope_cost_grid = computeSNETraversabilityCost(averaged_theta_grid);
 
-        // Create averaged cost grid
-        auto [averaged_grid, width_cells, height_cells, origin_x, origin_y] = createAveragedCostGrid(traversability_costs, costmap_metrics_);
-
-        return std::make_tuple(averaged_grid, width_cells, height_cells, origin_x, origin_y);
+        return std::make_tuple(slope_cost_grid, roughness_cost_grid, width_cells, height_cells, origin_x, origin_y);
     }
 
     std::vector<float> computePolarAngles(const std::vector<float>& points_with_normals_rover, 
@@ -957,52 +986,32 @@ private:
         return points_with_theta_rover;
     }
 
-    std::vector<float> computeSNETraversabilityCost(const std::vector<float>& points_with_theta_rover,
-                                                  uint32_t width, uint32_t height)
+    std::vector<float> computeSNETraversabilityCost(const std::vector<float>& theta_grid)
     {
-        // Create output vector for points with traversability costs
-        // Format: [x, y, z, cost] for each point
-        size_t num_pixels = width * height;
-        std::vector<float> points_with_costs(num_pixels * 4); // 4 values per point: x, y, z, cost
+        std::vector<float> grid_costs(theta_grid.size()); 
         
-        // Cost function: C = -13.857 * exp(theta) + 320.68
-        const float exponential_coefficient = 13.857f;
-        const float added_coefficient = 320.68f;
+        const float quadratic_coefficient = -102.94f;
+        const float linear_coefficient = 323.40f;
         
-        // Compute cost for each point
-        for (size_t i = 0; i < num_pixels; ++i)
+        for (size_t i = 0; i < theta_grid.size(); ++i)
         {
-            // Get point coordinates from the points_with_theta_rover vector
-            // Input format: [x, y, z, theta] per point
-            float x_rover = points_with_theta_rover[i * 4 + 0];
-            float y_rover = points_with_theta_rover[i * 4 + 1];
-            float z_rover = points_with_theta_rover[i * 4 + 2];
-            float theta = points_with_theta_rover[i * 4 + 3];
-            
-            // Compute cost
             float cost;
-            if (std::isnan(theta) || theta == 0.0f)
+            if (std::isnan(theta_grid[i]) || theta_grid[i] == 0.0f || theta_grid[i] == 255.0f)
             {
                 cost = 255.0f;
-            }
+            }            
             else
             {
-                // Compute cost: C = -13.857 * exp(theta) + 320.68 (theta in radians)
-                cost = -exponential_coefficient * std::exp(theta) + added_coefficient;
+                cost = quadratic_coefficient * theta_grid[i] * theta_grid[i] + linear_coefficient * theta_grid[i];
             }
-            
-            // Store combined data: [x, y, z, cost] in rover frame
-            points_with_costs[i * 4 + 0] = x_rover;
-            points_with_costs[i * 4 + 1] = y_rover;
-            points_with_costs[i * 4 + 2] = z_rover;
-            points_with_costs[i * 4 + 3] = cost;
+            grid_costs[i] = std::clamp(cost, 0.0f, 255.0f);
         }
 
-        return points_with_costs;
+        return grid_costs;
     }
 
     std::vector<float> combinePointcloudWithNormals(const std::vector<float>& pointcloud_rover, const std::vector<float>& normals_rover,
-                                                     uint32_t width, uint32_t height)
+                                                    uint32_t width, uint32_t height)
     {
         // Ensure pointcloud size matches normals size
         if (sync_pointcloud_->width != width || sync_pointcloud_->height != height)
@@ -1055,6 +1064,299 @@ private:
         
         
         return points_with_normals;
+    }
+
+    // roughness cost function
+    std::vector<float> computeGradientTraversabilityCost(const std::vector<float>& theta_grid,
+                                                     int height, int width) 
+    {
+        // Dilated gradient map calculation
+        std::vector<float> scaled_image = scaling(theta_grid, height, width);
+        
+        
+        std::vector<float> dilated_image = dilate(scaled_image, height, width, 2, false);
+        
+        std::vector<float> dilated_gradient = gradient_magnitude(dilated_image, height, width);
+
+        dilated_gradient = mean_within_radius(dilated_gradient, height, width, 1);
+
+        std::vector<float> gradient = dilate(dilated_gradient, height, width, 1, true);
+
+        std::vector<float> scaled_gradient = sigmoid_scaling(gradient, 40, 0.06, 0, 255);
+
+        return dilated_gradient;
+    }
+
+    // Function to dilate image (vectorized version with multiple iterations)
+    // dilate_255: if true, dilates 255 values into non-255 neighbors
+    //             if false, dilates non-255 values into 255 neighbors
+    std::vector<float> dilate(const std::vector<float>& image, int height, int width, int iterations = 1, bool dilate_255 = false) {
+        std::vector<float> dilated_image = image;  // Start with copy of original image
+        
+        RCLCPP_INFO(this->get_logger(), "Starting %d dilation iteration(s) on image of size %dx%d (dilate_255=%s)", 
+                    iterations, width, height, dilate_255 ? "true" : "false");
+        RCLCPP_INFO(this->get_logger(), "Image size: %zu", image.size());
+        RCLCPP_INFO(this->get_logger(), "Width: %d, Height: %d", width, height);
+        
+        for (int iter = 0; iter < iterations; iter++) {
+            // Create temporary output for this iteration - copy current state
+            std::vector<float> temp_image = dilated_image;
+            
+            for (int x = 0; x < width; x++) {
+                for (int y = 0; y < height; y++) {
+                    int idx = x * height + y;
+                    
+                    if (dilate_255) {
+                        // Set all edge pixels to 255 first (before any dilation logic)
+                        if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
+                            temp_image[idx] = 255.0f;
+                        }
+                        // DILATE 255 INTO NON-255: If any neighbor is 255, replace current pixel
+                        else if (dilated_image[idx] != 255) {
+                            // Check 8-connected neighbors
+                            std::vector<int> neighbor_indices = {
+                                (x - 1) * height + (y - 1), (x - 1) * height + y, (x - 1) * height + (y + 1),
+                                x * height + (y - 1),                             x * height + (y + 1),
+                                (x + 1) * height + (y - 1), (x + 1) * height + y, (x + 1) * height + (y + 1)
+                            };
+                            // If any neighbor is 255, set this pixel to 255
+                            for (int neighbor_idx : neighbor_indices) {
+                                if (dilated_image[neighbor_idx] == 255) {
+                                    temp_image[idx] = 255.0f;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        // Skip edge pixels for dilate_255 = false
+                        if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
+                            continue;
+                        }
+                        
+                        // ORIGINAL BEHAVIOR: If current pixel is 255, compute mean of non-255 neighbors
+                        if (dilated_image[idx] == 255) {
+                            std::vector<float> neighbor_values = {
+                                dilated_image[(x - 1) * height + (y - 1)], 
+                                dilated_image[(x - 1) * height + y], 
+                                dilated_image[(x - 1) * height + (y + 1)],
+                                dilated_image[x * height + (y - 1)],                     
+                                dilated_image[x * height + (y + 1)],
+                                dilated_image[(x + 1) * height + (y - 1)], 
+                                dilated_image[(x + 1) * height + y], 
+                                dilated_image[(x + 1) * height + (y + 1)]
+                            };
+                            
+                            float sum = 0.0f;
+                            int count = 0;
+                            for(float val : neighbor_values) {
+                                if (val != 255.0f) {
+                                    sum += val;
+                                    count++;
+                                }
+                            }
+                            
+                            if (count > 0) {
+                                temp_image[idx] = sum / count; // Assign mean of neighbors
+                            } else {
+                                temp_image[idx] = 255.0f; // No valid neighbors, keep as 255
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Update dilated_image for next iteration
+            dilated_image = temp_image;
+            
+            RCLCPP_INFO(this->get_logger(), "Completed dilation iteration %d/%d", iter + 1, iterations);
+        }
+        
+        return dilated_image;
+    }
+
+    // Function to calculate mean within radius (vectorized version, column-major)
+    std::vector<float> mean_within_radius(const std::vector<float>& image, int height, int width, int radius = 1) {
+        // Pad the image
+        int padded_height = height + 2 * radius;
+        int padded_width = width + 2 * radius;
+        std::vector<float> padded_image(padded_height * padded_width);
+        
+        // Edge padding - replicate border values
+        for (int x = 0; x < padded_width; x++) {
+            for (int y = 0; y < padded_height; y++) {
+                int padded_idx = x * padded_height + y;  // Column-major indexing
+                
+                // Clamp coordinates to original image bounds
+                int orig_x = std::min(std::max(x - radius, 0), width - 1);
+                int orig_y = std::min(std::max(y - radius, 0), height - 1);
+                int orig_idx = orig_x * height + orig_y;  // Column-major indexing
+                
+                padded_image[padded_idx] = image[orig_idx];
+            }
+        }
+        
+        std::vector<float> mean_image(padded_height * padded_width);
+        
+        // Calculate mean for each pixel in the padded region
+        for (int x = radius; x < padded_width - radius; x++) {
+            for (int y = radius; y < padded_height - radius; y++) {
+                int padded_idx = x * padded_height + y;  // Column-major indexing
+                
+                // If current pixel is 255, keep it as 255
+                if (padded_image[padded_idx] == 255.0f) {
+                    mean_image[padded_idx] = 255.0f;
+                    continue;
+                }
+                
+                float sum = 0.0f;
+                int count = 0;
+                
+                // Sum all pixels within radius, ignoring 255 values
+                for (int dx = -radius; dx <= radius; dx++) {
+                    for (int dy = -radius; dy <= radius; dy++) {
+                        int neighbor_idx = (x + dx) * padded_height + (y + dy);
+                        
+                        // Only include non-255 values in the mean
+                        if (padded_image[neighbor_idx] != 255.0f) {
+                            sum += padded_image[neighbor_idx];
+                            count++;
+                        }
+                    }
+                }
+                
+                // Compute mean only if there are valid (non-255) neighbors
+                if (count > 0) {
+                    mean_image[padded_idx] = sum / count;
+                } else {
+                    mean_image[padded_idx] = 255.0f;  // If all neighbors are 255, keep as 255
+                }
+            }
+        }
+        
+        // Remove padding and extract result
+        std::vector<float> result(height * width);
+        for (int x = 0; x < width; x++) {
+            for (int y = 0; y < height; y++) {
+                int result_idx = x * height + y;  // Column-major indexing
+                int padded_idx = (x + radius) * padded_height + (y + radius);
+                result[result_idx] = mean_image[padded_idx];
+            }
+        }
+        
+        return result;
+    }
+
+    // Linear scaling function
+    // TODO set old_min and old_max based on observed data range
+    std::vector<float> scaling(const std::vector<float>& image, int height, int width, 
+                            double old_min = 0, double old_max = 1.58, 
+                            double new_min = 0, double new_max = 255) {
+        
+        // Create a COPY inside the function to work with
+        std::vector<float> scaled_image = image;
+        
+        // ... all your existing code, but work on scaled_image ...
+                                
+        double input_min = 999999.0;
+        double input_max = -999999.0;
+        for (const auto& val : image) {  // Read from original
+            if (val == 255.0) continue;
+            if (val < input_min) input_min = val;
+            if (val > input_max) input_max = val;
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Input image min: %f, max: %f", input_min, input_max);
+        
+        int pixel_count = width * height;
+        for (int i = 0; i < pixel_count; i++) {
+            if (scaled_image[i] == 255.0f) {
+                scaled_image[i] = 255.0f;
+            } else {
+                scaled_image[i] = (scaled_image[i] - old_min) / (old_max - old_min) * 
+                                (new_max - new_min) + new_min;
+            }
+        }
+
+        // log the min, max, and average values of the scaled image for debugging
+        double min_val = 999999.0;
+        double max_val = -999999.0;
+        double sum_val = 0.0;
+        int count_val = 0;
+        
+        for (int i = 0; i < pixel_count; i++) {
+            if (image[i] != 255.0) {  // Ignore unknown/invalid values
+                if (image[i] < min_val) {
+                min_val = image[i];
+                }
+                if (image[i] > max_val) {
+                max_val = image[i];
+                }
+                sum_val += image[i];
+                count_val++;
+            }
+        }
+        
+        double avg_val = (count_val > 0) ? sum_val / count_val : 0.0;
+        RCLCPP_INFO(this->get_logger(), "Scaled image average: %f", avg_val);
+        RCLCPP_INFO(this->get_logger(), "Scaled image min: %f, max: %f", min_val, max_val);
+        RCLCPP_INFO(this->get_logger(), "HELLO IS ANYTHING WORKING");
+        
+        return scaled_image;
+    }
+
+    // Sigmoid scaling function (vectorized)
+    std::vector<float> sigmoid_scaling(const std::vector<float>& image, 
+                                    double midpoint, double steepness,
+                                    double new_min = 0, double new_max = 255) {
+        std::vector<float> scaled_image(image.size());
+        
+        for (size_t i = 0; i < image.size(); i++) {
+            if (image[i] == 255) {
+                scaled_image[i] = 255;
+            } else {
+                scaled_image[i] = new_min + (new_max - new_min) / (1 + exp(-steepness * (image[i] - midpoint)));
+            }
+        }
+        
+        return scaled_image;
+    }
+
+    // Function to calculate gradient magnitude (vectorized, column-major)
+    std::vector<float> gradient_magnitude(const std::vector<float>& image, int height, int width) {
+        std::vector<float> magnitude(height * width, 255.0f);  // Initialize to 255
+        
+        for (int x = 1; x < width - 1; x++) {
+            for (int y = 1; y < height - 1; y++) {
+                int idx = x * height + y;  // Column-major indexing
+                
+                // If current pixel is 255, keep it as 255
+                if (image[idx] >= 254.5f) {
+                    magnitude[idx] = 255.0f;
+                    continue;
+                }
+                
+                // Get neighbor indices
+                int idx_right = (x + 1) * height + y;
+                int idx_left = (x - 1) * height + y;
+                int idx_down = x * height + (y + 1);
+                int idx_up = x * height + (y - 1);
+                
+                // Skip if any neighbor is 255
+                if (image[idx_right] >= 254.5f || image[idx_left] >= 254.5f ||
+                    image[idx_down] >= 254.5f || image[idx_up] >= 254.5f) {
+                    magnitude[idx] = 0.0f;  // Set to 0 for borders near obstacles
+                    continue;
+                }
+                
+                // Calculate gradients using central difference
+                float dx = (image[idx_right] - image[idx_left]) / 2.0f;
+                float dy = (image[idx_down] - image[idx_up]) / 2.0f;
+                
+                magnitude[idx] = std::sqrt(dx * dx + dy * dy);
+            }
+        }
+        
+        return magnitude;
     }
 
     // - - - - - - - - - - - Cost Map Functions - - - - - - - - - - -
@@ -1187,7 +1489,7 @@ private:
         return rover_metrics;
     }
     
-    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedCostGrid(const std::vector<float>& points_with_costs, const costMapMetrics& costmap_metrics_)
+    std::tuple<std::vector<float>, uint32_t, uint32_t, float, float> createAveragedGrid(const std::vector<float>& points_with_costs, const costMapMetrics& costmap_metrics_)
     {
         double origin_x = costmap_metrics_.origin[0];
         double origin_y = costmap_metrics_.origin[1];
@@ -1490,7 +1792,7 @@ private:
             else
             {
                 // Scale from 0-255 to 0-100
-                grid_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+                grid_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
             }
         }
         
@@ -1531,7 +1833,7 @@ private:
         {
             float cost = averaged_grid[i];
             
-            // Costs are already in 0-255 range from createAveragedCostGrid
+            // Costs are already in 0-255 range from createAveragedGrid
             // Just clamp and convert to uint8_t
             if (cost >= 255.0f)
             {
@@ -1600,12 +1902,120 @@ private:
             else
             {
                 // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
             }
         }
         
         // Publish the visualization costmap
         costmap_sne_viz_pub_->publish(viz_msg);
+    }
+
+    void publishRoughnessCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                           const rclcpp::Time& timestamp)
+    {
+        // Create Costmap message
+        auto costmap_msg = nav2_msgs::msg::Costmap();
+        
+        // Set header
+        costmap_msg.header.stamp = timestamp;
+        costmap_msg.header.frame_id = "map"; 
+        
+        // Set metadata
+        costmap_msg.metadata.size_x = height_cells;
+        costmap_msg.metadata.size_y = width_cells;
+        costmap_msg.metadata.resolution = internal_resolution_;
+        
+        // Set origin (position of cell (0,0) in the map frame)
+        costmap_msg.metadata.origin.position.x = origin_x;
+        costmap_msg.metadata.origin.position.y = origin_y;
+        costmap_msg.metadata.origin.position.z = 0;
+        
+        // Keep initial orientation X foward, Y left, Z up
+        costmap_msg.metadata.origin.orientation.x = 0;
+        costmap_msg.metadata.origin.orientation.y = 0;
+        costmap_msg.metadata.origin.orientation.z = -0.7071068;
+        costmap_msg.metadata.origin.orientation.w = 0.7071068;
+        
+        // Allocate data array
+        costmap_msg.data.resize(width_cells * height_cells);
+        
+        // Convert averaged costs directly to uint8_t (already in 0-255 range)
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {
+            float cost = averaged_grid[i];
+            
+            // Costs are already in 0-255 range from createAveragedGrid
+            // Just clamp and convert to uint8_t
+            if (cost >= 255.0f)
+            {
+                costmap_msg.data[i] = 255;
+            }
+            else if (cost <= 0.0f)
+            {
+                costmap_msg.data[i] = 0;
+            }
+            else
+            {
+                costmap_msg.data[i] = static_cast<uint8_t>(cost);
+            }
+        }
+        
+        // Publish the costmap
+        costmap_roughness_pub_->publish(costmap_msg);
+        
+        // Also publish as OccupancyGrid for RViz2 visualization
+        publishRoughnessCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        
+        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
+    }
+
+    void publishRoughnessCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
+                              const rclcpp::Time& timestamp)
+    {
+        // Create OccupancyGrid message for RViz2 visualization
+        auto viz_msg = nav_msgs::msg::OccupancyGrid();
+        
+        // Set header
+        viz_msg.header.stamp = timestamp;
+        viz_msg.header.frame_id = "map";
+        
+        // Set metadata
+        viz_msg.info.width = width_cells;
+        viz_msg.info.height = height_cells;
+        viz_msg.info.resolution = internal_resolution_;
+        
+        // Origin position in rover frame 2D
+        viz_msg.info.origin.position.x = origin_x;
+        viz_msg.info.origin.position.y = origin_y;
+        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
+        
+        // -90 degrees around Z axis
+        viz_msg.info.origin.orientation.x = 0;
+        viz_msg.info.origin.orientation.y = 0;
+        viz_msg.info.origin.orientation.z = -0.7071068;
+        viz_msg.info.origin.orientation.w = 0.7071068; 
+        
+        // Allocate data array
+        viz_msg.data.resize(width_cells * height_cells);
+        
+        // Convert costs to OccupancyGrid format
+        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
+        // Scale our 0-255 costs to 0-100 range
+        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        {            
+            if (averaged_grid[i] >= 255.0f)
+            {
+                viz_msg.data[i] = -1; // Unknown
+            }
+            else
+            {
+                // Scale from 0-255 to 0-100
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
+            }
+        }
+        
+        // Publish the visualization costmap
+        costmap_roughness_viz_pub_->publish(viz_msg);
     }
     
 
@@ -1643,7 +2053,7 @@ private:
         {
             float cost = averaged_grid[i];
             
-            // Costs are already in 0-255 range from createAveragedCostGrid
+            // Costs are already in 0-255 range from createAveragedGrid
             // Just clamp and convert to uint8_t
             if (cost >= 255.0f)
             {
@@ -1712,7 +2122,7 @@ private:
             else
             {
                 // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 255.0f);
+                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
             }
         }
         
@@ -1734,13 +2144,15 @@ private:
     // Publishers
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_sne_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sne_viz_pub_;
+    rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_roughness_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_roughness_viz_pub_;
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_segmentation_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_segmentation_viz_pub_;
     rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr costmap_combined_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_combined_viz_pub_;
     
     // Service client
-    rclcpp::Client<sync_pkg::srv::TriggerSync>::SharedPtr trigger_sync_client_;
+    rclcpp::Client<interfaces::srv::TriggerSync>::SharedPtr trigger_sync_client_;
     
     // Synchronized pointcloud data
     sensor_msgs::msg::PointCloud2::SharedPtr sync_pointcloud_;
@@ -1757,6 +2169,7 @@ private:
     uint32_t segmentation_height_;
     std::vector<uint8_t> class_ids_;
     std::vector<float> confidences_;
+    float confidence_dampening_; // exponent for confidence adjustment
 
     int dilation_kernel_size_;
     float dilation_min_confidence_;
@@ -1814,4 +2227,3 @@ int main(int argc, char** argv)
 
 
 //TODO Fix the cost of sne costmap to be in global frame
-//TODO in launch file set sync_nodes to start last

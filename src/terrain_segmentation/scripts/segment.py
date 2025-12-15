@@ -6,40 +6,45 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import os
-import yaml
 import cv2
 import numpy as np
-from ament_index_python.packages import get_package_share_directory
 
 class TAMTSegmentationNode(Node):
     def __init__(self):
         super().__init__('tamt_segmentation_node')
 
-        # Declare parameter for config file
-        self.declare_parameter('config_file', 'seg_inference.yaml')
-        config_file = self.get_parameter('config_file').value
+        # Declare and get segmentation parameters from ROS2 parameter server
+        self.declare_parameter('segmentation.model.model_dir', 'models/TAMT.pt')
+        self.declare_parameter('segmentation.model.device', '0')
+        self.declare_parameter('segmentation.inference.conf', 0.25)
+        self.declare_parameter('segmentation.inference.iou', 0.50)
+        self.declare_parameter('segmentation.inference.imgsz', 640)
+        self.declare_parameter('segmentation.inference.max_det', 300)
         
-        # Load configuration
-        self.config = self.load_config(config_file)
-
-        # Get inference parameters
-        self.conf = self.config['inference'].get('conf', 0.75)
-        self.iou = self.config['inference'].get('iou', 0.50)
-        self.imgsz = self.config['inference'].get('imgsz', 640)
-        self.max_det = self.config['inference'].get('max_det', 300)
+        # Get parameters
+        model_dir = self.get_parameter('segmentation.model.model_dir').value
+        device = self.get_parameter('segmentation.model.device').value
+        self.conf = self.get_parameter('segmentation.inference.conf').value
+        self.iou = self.get_parameter('segmentation.inference.iou').value
+        self.imgsz = self.get_parameter('segmentation.inference.imgsz').value
+        self.max_det = self.get_parameter('segmentation.inference.max_det').value
 
         # Initialize CV bridge
         self.bridge = CvBridge()
         
         # Load model
         self.model = None
-        self.load_model()
+        self.load_model(model_dir, device)
 
         # Header of received image
         self.current_image_header = None
                 
         # ------ Publishers ------
-        self.segmentation_mask_pub = self.create_publisher(Image, '/tamt/segmentation/masks_with_confidence', 10)
+        self.segmentation_mask_pub = self.create_publisher(
+            Image, 
+            '/tamt/segmentation/masks_with_confidence', 
+            10
+        )
       
         # ------ Subscribers ------
         self.image_sub = self.create_subscription(
@@ -50,7 +55,7 @@ class TAMTSegmentationNode(Node):
         )
  
         self.get_logger().info('TAMT Segmentation Node initialized')
-        self.log_config()
+        self.log_config(model_dir, device)
 
     #################### Subscriber & Publisher functions ####################
 
@@ -73,67 +78,54 @@ class TAMTSegmentationNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to publish mask: {str(e)}")
     
-
-    #################### Load config and model ####################
-       
-    def load_config(self, config_file):
-        """Load configuration from YAML file"""
-        try:
-            # Try to find config in package share directory
-            try:
-                package_share = get_package_share_directory('terrain_segmentation')
-                config_path = os.path.join(package_share, 'config', config_file)
-            except:
-                config_path = config_file
-                
-            if not os.path.exists(config_path):
-                # Try absolute path
-                config_path = config_file
-                
-            if not os.path.exists(config_path):
-                self.get_logger().error(f"Config file not found: {config_path}")
-                raise FileNotFoundError(f"Config file not found: {config_path}")
-            
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            self.get_logger().info(f"Loaded config from: {config_path}")
-            return config
-            
-        except Exception as e:
-            self.get_logger().error(f"Failed to load config: {str(e)}")
-            raise
+    #################### Load model ####################
     
-    def load_model(self):
+    def load_model(self, model_dir, device):
         """Load Model from configured path"""
         try:
-            model_path = os.path.expanduser(self.config['model']['model_dir'])
+            # Expand user path (~ to home directory)
+            model_path = os.path.expanduser(model_dir)
+            
+            # If path is relative, try to make it absolute
+            if not os.path.isabs(model_path):
+                # Try different possible paths
+                possible_paths = [
+                    model_path,  
+                    os.path.join(os.getcwd(), model_path),  # Relative to current dir
+                    os.path.join(os.path.expanduser('~/tamt/src/terrain_segmentation'), model_path),  # Relative to package
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        model_path = path
+                        break
             
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"Model file not found: {model_path}")
             
             # Parse device
-            device = self.parse_device(self.config['model']['device'])
+            parsed_device = self.parse_device(device)
             
             self.model = YOLO(model_path)
             self.get_logger().info(f"Loaded model from: {model_path}")
-            self.get_logger().info(f"Using device: {device}")
+            self.get_logger().info(f"Using device: {parsed_device}")
             
             # Set device
-            self.model.to(device)
+            self.model.to(parsed_device)
             
         except Exception as e:
             self.get_logger().error(f"Failed to load model: {str(e)}")
             raise
     
-    def log_config(self):
+    def log_config(self, model_dir, device):
         """Log important configuration parameters"""
         self.get_logger().info('=== Configuration ===')
-        self.get_logger().info(f'Model: {self.config["model"]["model_dir"]}')
-        self.get_logger().info(f'Dataset: {self.config["dataset"]["path"]}')
-        self.get_logger().info(f'Device: {self.config["model"]["device"]}')
-        self.get_logger().info(f'Confidence: {self.config["inference"].get("conf", 0.25)}')
-        self.get_logger().info(f'IoU: {self.config["inference"].get("iou", 0.45)}')
+        self.get_logger().info(f'Model: {model_dir}')
+        self.get_logger().info(f'Device: {device}')
+        self.get_logger().info(f'Confidence: {self.conf}')
+        self.get_logger().info(f'IoU: {self.iou}')
+        self.get_logger().info(f'Image Size: {self.imgsz}')
+        self.get_logger().info(f'Max Detections: {self.max_det}')
     
     def parse_device(self, device):
         """Parse device configuration"""
@@ -155,7 +147,7 @@ class TAMTSegmentationNode(Node):
         """Run inference on a single image"""
         # Verify image is good
         if image is None or image.size == 0:
-            print("Invalid image for inference, skipping.")
+            self.get_logger().warn("Invalid image for inference, skipping.")
             return
         
         # Run inference

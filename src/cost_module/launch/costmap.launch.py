@@ -19,7 +19,8 @@ def generate_launch_description():
         executable='segment.py',
         name='terrain_segmentation_node',
         namespace='tamt',
-        arguments=['--ros-args', '--log-level', 'WARN'],
+        parameters=[config_file],
+        arguments=['--ros-args', '--log-level', 'INFO'],
         output='screen'
     )
    
@@ -29,22 +30,23 @@ def generate_launch_description():
         executable='surface_normal_estimator',
         name='surface_normal_estimator',
         namespace='tamt',
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
 
     # 3. Costmap SNE (delayed 1 second, INFO level - keep all logs)
-    costmap_sne = Node(
+    cost_module = Node(
         package='cost_module',
-        executable='costmap_sne',
+        executable='cost_module',
         name='costmap_module',
         namespace='tamt',
         parameters=[config_file],
         output='screen'
     )
-    delayed_costmap_sne = TimerAction(
+    delayed_cost_module = TimerAction(
         period=5.0,
-        actions=[costmap_sne]
+        actions=[cost_module]
     )
 
     # 4. Data synchroniser
@@ -53,6 +55,7 @@ def generate_launch_description():
         executable='data_synchroniser',
         name='data_synchroniser',
         namespace='tamt',
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
@@ -66,6 +69,7 @@ def generate_launch_description():
         package='sync_pkg',
         executable='publish_updated_raw_data',
         name='raw_data_publisher',
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
@@ -77,7 +81,7 @@ def generate_launch_description():
     return LaunchDescription([
         terrain_segmentation,
         surface_normal,
-        delayed_costmap_sne,
+        delayed_cost_module,
         delayed_synchronizer,
         delayed_publisher_all
     ])

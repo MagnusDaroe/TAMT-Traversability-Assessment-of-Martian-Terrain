@@ -1,6 +1,6 @@
 /*
-command: ros2 run sync_pkg sync_service_node --ros-args -p fx:=525.0 -p fy:=525.0 -p cx:=319.5 -p cy:=239.5
-call service: ros2 service call trigger_sync sync_pkg/srv/TriggerSync
+command: ros2 run interfaces sync_service_node --ros-args -p fx:=525.0 -p fy:=525.0 -p cx:=319.5 -p cy:=239.5
+call service: ros2 service call tamt/trigger_sync interfaces/srv/TriggerSync
 */
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -9,7 +9,7 @@ call service: ros2 service call trigger_sync sync_pkg/srv/TriggerSync
 #include <message_filters/synchronizer.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
-#include "sync_pkg/srv/trigger_sync.hpp"
+#include "interfaces/srv/trigger_sync.hpp"
 #include "depth_to_pointcloud.hpp"
 
 class SyncServiceNode : public rclcpp::Node
@@ -24,16 +24,15 @@ public:
     cam_pose_subscriber_.subscribe(this, "/rover_pose");
 
     // Camera intrinsic parameters
-    this->declare_parameter<double>("fx", 685.51);
-    this->declare_parameter<double>("fy", 189.06);
-    this->declare_parameter<double>("cx", 480.00);
-    this->declare_parameter<double>("cy", 270.00);
+    this->declare_parameter("camera.intrinsics.fx", 1.0f);
+    this->declare_parameter("camera.intrinsics.fy", 1.0f);
+    this->declare_parameter("camera.intrinsics.cx", 1.0f);
+    this->declare_parameter("camera.intrinsics.cy", 1.0f);
 
-    // Get camera intrinsic parameters
-    intrinsics_.fx = this->get_parameter("fx").as_double();
-    intrinsics_.fy = this->get_parameter("fy").as_double();
-    intrinsics_.cx = this->get_parameter("cx").as_double();
-    intrinsics_.cy = this->get_parameter("cy").as_double();
+    intrinsics_.fx = this->get_parameter("camera.intrinsics.fx").as_double();
+    intrinsics_.fy = this->get_parameter("camera.intrinsics.fy").as_double();
+    intrinsics_.cx = this->get_parameter("camera.intrinsics.cx").as_double();
+    intrinsics_.cy = this->get_parameter("camera.intrinsics.cy").as_double();
 
     // Synchronizer with ApproximateTime policy and queue size = 50
     sync_ = std::make_shared<message_filters::Synchronizer<ApproxSyncPolicy>>(
@@ -50,7 +49,7 @@ public:
     cam_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tamt/sync/rover_pose", 10);
 
     // Create service
-    service_ = this->create_service<sync_pkg::srv::TriggerSync>(
+    service_ = this->create_service<interfaces::srv::TriggerSync>(
       "trigger_sync",
       std::bind(&SyncServiceNode::handle_service_request, this,
                 std::placeholders::_1, std::placeholders::_2));
@@ -89,8 +88,8 @@ private:
   }
 
   void handle_service_request(
-    const std::shared_ptr<sync_pkg::srv::TriggerSync::Request> request,
-    std::shared_ptr<sync_pkg::srv::TriggerSync::Response> response)
+    const std::shared_ptr<interfaces::srv::TriggerSync::Request> request,
+    std::shared_ptr<interfaces::srv::TriggerSync::Response> response)
   {
     (void)request;
 
@@ -159,7 +158,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr cam_pose_publisher_;
 
   // Service
-  rclcpp::Service<sync_pkg::srv::TriggerSync>::SharedPtr service_;
+  rclcpp::Service<interfaces::srv::TriggerSync>::SharedPtr service_;
 
   // Storage for latest synchronized pair
   sensor_msgs::msg::Image::ConstSharedPtr latest_rgb_msg_;

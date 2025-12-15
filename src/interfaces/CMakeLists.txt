@@ -17,6 +17,7 @@ endif()
 # Generate message files
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Dummy.msg"
+  "srv/TriggerSync.srv"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs sensor_msgs
 )
 
