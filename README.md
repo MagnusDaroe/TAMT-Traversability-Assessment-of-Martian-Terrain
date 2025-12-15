@@ -47,7 +47,7 @@ The system generates traversability costmaps visualizable in RViz2:
 - **Surface Normal Costmap** - slope and orientation analysis
 - **Combined Costmap** - weighted fusion of all layers (always published)
 
-![System Diagram](__docs/images/SystemGraph.png)
+![System Diagram](docs/images/SystemGraph.png)
 
 ## Configuration
 
