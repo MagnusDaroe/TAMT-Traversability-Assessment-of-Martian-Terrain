@@ -50,18 +50,18 @@ public:
         this->declare_parameter("costmap.segmentation.dilation_enabled", false);
         this->declare_parameter("costmap.segmentation.dilation_kernel_size", 3);
         this->declare_parameter("costmap.segmentation.dilation_min_confidence", 0.7);
-        this->declare_parameter("costmap.weight_sne", 0.4);
-        this->declare_parameter("costmap.weight_segmentation", 0.3);
-        this->declare_parameter("costmap.weight_roughness", 0.3);
-        this->declare_parameter("costmap.confidence_dampening", 1.0);
+        this->declare_parameter("costmap.combined_costmap.weights.sne", 1.0);
+        this->declare_parameter("costmap.combined_costmap.weights.segmentation", 0.0);
+        this->declare_parameter("costmap.combined_costmap.weights.roughness", 0.0);
+        this->declare_parameter("costmap.segmentation_costmap.confidence_dampening", 1.0);
 
         dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
         dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
         dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
-        weight_sne_ = this->get_parameter("costmap.weight_sne").as_double();
-        weight_segmentation_ = this->get_parameter("costmap.weight_segmentation").as_double();
-        weight_roughness_ = this->get_parameter("costmap.weight_roughness").as_double();
-        confidence_dampening_ = this->get_parameter("costmap.confidence_dampening").as_double();
+        weight_sne_ = this->get_parameter("costmap.combined_costmap.weights.sne").as_double();
+        weight_segmentation_ = this->get_parameter("costmap.combined_costmap.weights.segmentation").as_double();
+        weight_roughness_ = this->get_parameter("costmap.combined_costmap.weights.roughness").as_double();
+        confidence_dampening_ = this->get_parameter("costmap.segmentation_costmap.confidence_dampening").as_double();
 
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
@@ -253,85 +253,94 @@ private:
 
     void timerCallback()
     {
-        if(new_sne_data_ && new_segmentation_mask_data_)
+        // Early return if data not ready
+        if (!new_sne_data_ || !new_segmentation_mask_data_)
         {
-            
-            if (!sync_pointcloud_)
-            {
-                RCLCPP_WARN(this->get_logger(), "Pointcloud not yet received, skipping processing");
-                return;
-            }
- 
-            rclcpp::Time timestamp = this->now();
-            
-            std::vector<float> pointcloud = pointcloudToVector();
-            std::vector<float> pointcloud_rover = transformToRoverFrame(pointcloud, pointcloud_width_, pointcloud_height_, false);
-            
-            // Process SNE data
-            auto [sne_costmap, roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y] = 
-                surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_);
-            new_sne_data_ = false;
+            return;
+        }
+        
+        if (!sync_pointcloud_)
+        {
+            RCLCPP_WARN(this->get_logger(), "Pointcloud not yet received, skipping processing");
+            return;
+        }
+        
+        rclcpp::Time timestamp = this->now();
+        
+        // Transform pointcloud to rover frame
+        std::vector<float> pointcloud = pointcloudToVector();
+        std::vector<float> pointcloud_rover = transformToRoverFrame(
+            pointcloud, pointcloud_width_, pointcloud_height_, false);
+        
+        // Process SNE data
+        auto [sne_costmap, roughness_costmap, sne_width, sne_height, sne_origin_x, sne_origin_y] = 
+            surfaceNormals(pointcloud_rover, normals_camera_, sne_width_, sne_height_);
+        new_sne_data_ = false;
 
-            // Publish SNE costmap
-            if (publish_individual_layers_){
-                publishSNECostmap(sne_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
-            }
-           
+        // Process segmentation mask data
+        auto [seg_costmap, class_grid, confidence_grid, seg_width, seg_height, seg_origin_x, seg_origin_y] = 
+            computeSegmentationCostMap(pointcloud_rover, class_ids_, confidences_, 
+                                    segmentation_width_, segmentation_height_);
+        new_segmentation_mask_data_ = false;
 
-            // Publish roughness costmap
-            publishRoughnessCostmap(roughness_costmap, sne_width_cells, sne_height_cells, sne_origin_x, sne_origin_y, timestamp);
+        if (seg_costmap.empty())
+        {
+            RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping processing");
+            return;
+        }
 
-            // Process segmentation mask data and get costmap
-            auto [seg_costmap, class_grid, confidence_grid, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y] = 
-                computeSegmentationCostMap(pointcloud_rover, class_ids_, confidences_, 
-                            segmentation_width_, segmentation_height_);
-            new_segmentation_mask_data_ = false;
+        // Apply dilation if enabled
+        if (dilation_enabled_)
+        {
+            seg_costmap = dilateToFillUnknown(seg_costmap, class_grid, confidence_grid, 
+                                            seg_width, seg_height, 
+                                            dilation_kernel_size_, dilation_min_confidence_);
+            RCLCPP_DEBUG(this->get_logger(), "Applied dilation to segmentation costmap");
+        }
 
-            if (seg_costmap.empty())
-            {
-                RCLCPP_WARN(this->get_logger(), "Segmentation costmap is empty, skipping processing");
-                return;
-            }
+        // Fill holes with convex hull method
+        seg_costmap = fillHolesWithConvexHull(seg_costmap, pointcloud_rover, 
+                                            class_ids_, confidences_,
+                                            segmentation_width_, segmentation_height_,
+                                            seg_width, seg_height, 
+                                            seg_origin_x, seg_origin_y);
 
-            // Apply dilation if enabled
-            std::vector<float> dilated_costmap = seg_costmap;
-            if (dilation_enabled_ == true)
-            {
-                dilated_costmap = dilateToFillUnknown(
-                    seg_costmap, class_grid, confidence_grid, 
-                    seg_width_cells, seg_height_cells, 
-                    dilation_kernel_size_, dilation_min_confidence_);
-                
-                RCLCPP_INFO(this->get_logger(), "Applied dilation to segmentation costmap");
-            }
+        // Combine costmaps
+        std::vector<float> combined_costmap = combineCostMaps(sne_costmap, roughness_costmap, seg_costmap);
+        
+        // Downscale to output resolution
+        auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(
+            combined_costmap, seg_width, seg_height, internal_resolution_, output_resolution_);
 
-            // Fill holes with convex hull method
-            dilated_costmap = fillHolesWithConvexHull(
-                dilated_costmap,        // existing costmap
-                pointcloud_rover,       // 3D points
-                class_ids_,            // segmentation classes
-                confidences_,          // segmentation confidence
-                segmentation_width_,   // image width
-                segmentation_height_,  // image height
-                seg_width_cells,       // costmap width
-                seg_height_cells,      // costmap height
-                seg_origin_x,          // costmap origin x
-                seg_origin_y);         // costmap origin y
+        // ============================================================
+        // Publishing Section
+        // ============================================================
         
 
-            // Publish final segmentation costmap
-            if (publish_individual_layers_){
-                publishSegmentationCostmap(dilated_costmap, seg_width_cells, seg_height_cells, seg_origin_x, seg_origin_y, timestamp);
-            }
+        // Publish combined costmap
+        publishCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, 
+                    timestamp, CostmapType::COMBINED);
 
-            // Combine Cost maps
-            std::vector<float> combined_costmap = combineCostMaps(sne_costmap, roughness_costmap, dilated_costmap);
+        // Publish individual layers if enabled
+        if (publish_individual_layers_)
+        {
+            // Downscale individual costmaps to output resolution
+            auto [sne_costmap_ds, sne_width_ds, sne_height_ds] = downscaleCostGrid(
+                sne_costmap, sne_width, sne_height, internal_resolution_, output_resolution_);
+            auto [seg_costmap_ds, seg_width_ds, seg_height_ds] = downscaleCostGrid(
+                seg_costmap, seg_width, seg_height, internal_resolution_, output_resolution_);
+            auto [roughness_costmap_ds, roughness_width_ds, roughness_height_ds] = downscaleCostGrid(
+                roughness_costmap, sne_width, sne_height, internal_resolution_, output_resolution_);
             
-            // Downscale
-            auto [downscaled_costmap, new_width, new_height] = downscaleCostGrid(combined_costmap, seg_width_cells, seg_height_cells, internal_resolution_, output_resolution_);
-            publishCombinedCostmap(downscaled_costmap, new_width, new_height, seg_origin_x, seg_origin_y, timestamp);
-            
-            // Trigger sync service call
+            publishCostmap(sne_costmap_ds, sne_width_ds, sne_height_ds, sne_origin_x, sne_origin_y, 
+                        timestamp, CostmapType::SNE);
+            publishCostmap(seg_costmap_ds, seg_width_ds, seg_height_ds, seg_origin_x, seg_origin_y, 
+                        timestamp, CostmapType::SEGMENTATION);
+            publishCostmap(roughness_costmap_ds, sne_width_ds, sne_height_ds, sne_origin_x, sne_origin_y, 
+                        timestamp, CostmapType::ROUGHNESS);
+        }
+        
+        // Trigger sync service call
             // if (trigger_sync_client_->service_is_ready()) {
             //     auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
             //     trigger_sync_client_->async_send_request(request,
@@ -339,8 +348,6 @@ private:
             // } else {
             //     RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
             // }
-            
-        }
     }
 
     void pointcloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -1708,29 +1715,42 @@ private:
  
     // - - - - - - - - - - - Publishers Functions - - - - - - - - - - -
 
-    void publishSegmentationCostmap(const std::vector<float>& averaged_grid, 
-                        uint32_t width_cells, uint32_t height_cells, 
-                        float origin_x, float origin_y,
-                        const rclcpp::Time& timestamp)
-    {
-        // Create Costmap message (nav2_msgs::msg::Costmap)
-        auto costmap_msg = nav2_msgs::msg::Costmap();
+    // Enum to identify costmap types
+    enum class CostmapType {
+        SEGMENTATION,
+        SNE,
+        ROUGHNESS,
+        COMBINED
+    };
 
+    // General costmap publishing function
+    void publishCostmap(const std::vector<float>& averaged_grid, 
+                    uint32_t width_cells, uint32_t height_cells, 
+                    float origin_x, float origin_y,
+                    const rclcpp::Time& timestamp,
+                    CostmapType type)
+    {
+        // Get the appropriate publisher and resolution based on type
+        auto [costmap_pub, viz_pub, resolution] = getCostmapPublishers(type);
+        
+        // Create Costmap message
+        auto costmap_msg = nav2_msgs::msg::Costmap();
+        
         // Set header
         costmap_msg.header.stamp = timestamp;
-        costmap_msg.header.frame_id = "map";  
+        costmap_msg.header.frame_id = "map";
         
         // Set metadata
-        costmap_msg.metadata.size_x = width_cells;
-        costmap_msg.metadata.size_y = height_cells;
-        costmap_msg.metadata.resolution = internal_resolution_;
-
-        // Set origin (position of cell (0,0) in the map frame)
+        costmap_msg.metadata.size_x = (type == CostmapType::SEGMENTATION) ? width_cells : height_cells;
+        costmap_msg.metadata.size_y = (type == CostmapType::SEGMENTATION) ? height_cells : width_cells;
+        costmap_msg.metadata.resolution = resolution;
+        
+        // Set origin
         costmap_msg.metadata.origin.position.x = origin_x;
         costmap_msg.metadata.origin.position.y = origin_y;
         costmap_msg.metadata.origin.position.z = 0.0;
-
-        // Keep initial orientation X foward, Y left, Z up
+        
+        // Set orientation (X forward, Y left, Z up, -90° around Z axis)
         costmap_msg.metadata.origin.orientation.x = 0;
         costmap_msg.metadata.origin.orientation.y = 0;
         costmap_msg.metadata.origin.orientation.z = -0.7071068;
@@ -1743,160 +1763,56 @@ private:
             costmap_msg.data[i] = static_cast<uint8_t>(std::clamp(averaged_grid[i], 0.0f, 255.0f));
         }
         
-        costmap_segmentation_pub_->publish(costmap_msg);
+        // Publish the costmap
+        costmap_pub->publish(costmap_msg);
         
-        // Also publish visualization (OccupancyGrid)
-        if (publish_costmap_visualizations_){
-        publishSegmentationCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
+        // Publish visualization if enabled
+        if (publish_costmap_visualizations_)
+        {
+            publishCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, 
+                            timestamp, resolution, viz_pub);
         }
         
-        RCLCPP_DEBUG(this->get_logger(), "Published costmap: %dx%d in base_link frame", width_cells, height_cells);
+        RCLCPP_DEBUG(this->get_logger(), "Published %s costmap: %dx%d", 
+                    getCostmapTypeName(type).c_str(), width_cells, height_cells);
     }
 
-    void publishSegmentationCostmapViz(const std::vector<float>& averaged_grid, 
-                           uint32_t width_cells, uint32_t height_cells, 
-                           float origin_x, float origin_y,
-                           const rclcpp::Time& timestamp)
+    // General visualization publishing function
+    void publishCostmapViz(const std::vector<float>& averaged_grid, 
+                        uint32_t width_cells, uint32_t height_cells, 
+                        float origin_x, float origin_y,
+                        const rclcpp::Time& timestamp,
+                        float resolution,
+                        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr viz_pub)
     {
-        // Create OccupancyGrid message for RViz2 visualization
-        auto grid_msg = nav_msgs::msg::OccupancyGrid();
-
+        auto viz_msg = nav_msgs::msg::OccupancyGrid();
+        
         // Set header
-        grid_msg.header.stamp = timestamp;
-        grid_msg.header.frame_id = "map";  //  rover frame
+        viz_msg.header.stamp = timestamp;
+        viz_msg.header.frame_id = "map";
         
         // Set metadata
-        grid_msg.info.resolution = internal_resolution_;
-        grid_msg.info.width = width_cells;
-        grid_msg.info.height = height_cells;
-
-        // Set origin (position of cell (0,0) in the map frame)
-        grid_msg.info.origin.position.x = origin_x;
-        grid_msg.info.origin.position.y = origin_y;
-        grid_msg.info.origin.position.z = 0.0;
-
-        // Keep initial orientation X foward, Y left, Z up
-        grid_msg.info.origin.orientation.x = 0;
-        grid_msg.info.origin.orientation.y = 0;
-        grid_msg.info.origin.orientation.z = -0.7071068;
-        grid_msg.info.origin.orientation.w = 0.7071068;
+        viz_msg.info.width = width_cells;
+        viz_msg.info.height = height_cells;
+        viz_msg.info.resolution = resolution;
+        
+        // Set origin
+        viz_msg.info.origin.position.x = origin_x;
+        viz_msg.info.origin.position.y = origin_y;
+        viz_msg.info.origin.position.z = 0.0;
+        
+        // Set orientation (-90° around Z axis)
+        viz_msg.info.origin.orientation.x = 0;
+        viz_msg.info.origin.orientation.y = 0;
+        viz_msg.info.origin.orientation.z = -0.7071068;
+        viz_msg.info.origin.orientation.w = 0.7071068;
         
         // Convert to OccupancyGrid format (0-100, -1 for unknown)
-        grid_msg.data.resize(width_cells * height_cells);
+        viz_msg.data.resize(width_cells * height_cells);
         for (size_t i = 0; i < averaged_grid.size(); ++i)
         {
             if (averaged_grid[i] >= 255.0f)
             {
-                grid_msg.data[i] = -1; // Unknown
-            }
-            else
-            {
-                // Scale from 0-255 to 0-100
-                grid_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
-            }
-        }
-        
-        costmap_segmentation_viz_pub_->publish(grid_msg);
-    }
-
-    void publishSNECostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                           const rclcpp::Time& timestamp)
-    {
-        // Create Costmap message
-        auto costmap_msg = nav2_msgs::msg::Costmap();
-        
-        // Set header
-        costmap_msg.header.stamp = timestamp;
-        costmap_msg.header.frame_id = "map"; 
-        
-        // Set metadata
-        costmap_msg.metadata.size_x = height_cells;
-        costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = internal_resolution_;
-        
-        // Set origin (position of cell (0,0) in the map frame)
-        costmap_msg.metadata.origin.position.x = origin_x;
-        costmap_msg.metadata.origin.position.y = origin_y;
-        costmap_msg.metadata.origin.position.z = 0;
-        
-        // Keep initial orientation X foward, Y left, Z up
-        costmap_msg.metadata.origin.orientation.x = 0;
-        costmap_msg.metadata.origin.orientation.y = 0;
-        costmap_msg.metadata.origin.orientation.z = -0.7071068;
-        costmap_msg.metadata.origin.orientation.w = 0.7071068;
-        
-        // Allocate data array
-        costmap_msg.data.resize(width_cells * height_cells);
-        
-        // Convert averaged costs directly to uint8_t (already in 0-255 range)
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {
-            float cost = averaged_grid[i];
-            
-            // Costs are already in 0-255 range from createAveragedGrid
-            // Just clamp and convert to uint8_t
-            if (cost >= 255.0f)
-            {
-                costmap_msg.data[i] = 255;
-            }
-            else if (cost <= 0.0f)
-            {
-                costmap_msg.data[i] = 0;
-            }
-            else
-            {
-                costmap_msg.data[i] = static_cast<uint8_t>(cost);
-            }
-        }
-        
-        // Publish the costmap
-        costmap_sne_pub_->publish(costmap_msg);
-        
-        // Also publish as OccupancyGrid for RViz2 visualization
-        if (publish_costmap_visualizations_){
-        publishSNECostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-        }
-
-        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
-    }
-
-    void publishSNECostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                              const rclcpp::Time& timestamp)
-    {
-        // Create OccupancyGrid message for RViz2 visualization
-        auto viz_msg = nav_msgs::msg::OccupancyGrid();
-        
-        // Set header
-        viz_msg.header.stamp = timestamp;
-        viz_msg.header.frame_id = "map";
-        
-        // Set metadata
-        viz_msg.info.width = width_cells;
-        viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = internal_resolution_;
-        
-        // Origin position in rover frame 2D
-        viz_msg.info.origin.position.x = origin_x;
-        viz_msg.info.origin.position.y = origin_y;
-        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
-        
-        // -90 degrees around Z axis
-        viz_msg.info.origin.orientation.x = 0;
-        viz_msg.info.origin.orientation.y = 0;
-        viz_msg.info.origin.orientation.z = -0.7071068;
-        viz_msg.info.origin.orientation.w = 0.7071068; 
-        
-        // Allocate data array
-        viz_msg.data.resize(width_cells * height_cells);
-        
-        // Convert costs to OccupancyGrid format
-        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
-        // Scale our 0-255 costs to 0-100 range
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {
-            
-            if (averaged_grid[i] >= 255.0f)
-            {
                 viz_msg.data[i] = -1; // Unknown
             }
             else
@@ -1906,232 +1822,40 @@ private:
             }
         }
         
-        // Publish the visualization costmap
-        costmap_sne_viz_pub_->publish(viz_msg);
+        viz_pub->publish(viz_msg);
     }
 
-    void publishRoughnessCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                           const rclcpp::Time& timestamp)
+    // Helper function to get publishers and resolution based on type
+    std::tuple<rclcpp::Publisher<nav2_msgs::msg::Costmap>::SharedPtr,
+            rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr,
+            float> 
+    getCostmapPublishers(CostmapType type)
     {
-        // Create Costmap message
-        auto costmap_msg = nav2_msgs::msg::Costmap();
-        
-        // Set header
-        costmap_msg.header.stamp = timestamp;
-        costmap_msg.header.frame_id = "map"; 
-        
-        // Set metadata
-        costmap_msg.metadata.size_x = height_cells;
-        costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = internal_resolution_;
-        
-        // Set origin (position of cell (0,0) in the map frame)
-        costmap_msg.metadata.origin.position.x = origin_x;
-        costmap_msg.metadata.origin.position.y = origin_y;
-        costmap_msg.metadata.origin.position.z = 0;
-        
-        // Keep initial orientation X foward, Y left, Z up
-        costmap_msg.metadata.origin.orientation.x = 0;
-        costmap_msg.metadata.origin.orientation.y = 0;
-        costmap_msg.metadata.origin.orientation.z = -0.7071068;
-        costmap_msg.metadata.origin.orientation.w = 0.7071068;
-        
-        // Allocate data array
-        costmap_msg.data.resize(width_cells * height_cells);
-        
-        // Convert averaged costs directly to uint8_t (already in 0-255 range)
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
+        switch (type)
         {
-            float cost = averaged_grid[i];
-            
-            // Costs are already in 0-255 range from createAveragedGrid
-            // Just clamp and convert to uint8_t
-            if (cost >= 255.0f)
-            {
-                costmap_msg.data[i] = 255;
-            }
-            else if (cost <= 0.0f)
-            {
-                costmap_msg.data[i] = 0;
-            }
-            else
-            {
-                costmap_msg.data[i] = static_cast<uint8_t>(cost);
-            }
+            case CostmapType::SEGMENTATION:
+                return {costmap_segmentation_pub_, costmap_segmentation_viz_pub_, output_resolution_};
+            case CostmapType::SNE:
+                return {costmap_sne_pub_, costmap_sne_viz_pub_, output_resolution_};
+            case CostmapType::ROUGHNESS:
+                return {costmap_roughness_pub_, costmap_roughness_viz_pub_, output_resolution_};
+            case CostmapType::COMBINED:
+                return {costmap_combined_pub_, costmap_combined_viz_pub_, output_resolution_};
         }
-        
-        // Publish the costmap
-        costmap_roughness_pub_->publish(costmap_msg);
-        
-        // Also publish as OccupancyGrid for RViz2 visualization
-        publishRoughnessCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-        
-        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
     }
 
-    void publishRoughnessCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                              const rclcpp::Time& timestamp)
+    std::string getCostmapTypeName(CostmapType type)
     {
-        // Create OccupancyGrid message for RViz2 visualization
-        auto viz_msg = nav_msgs::msg::OccupancyGrid();
-        
-        // Set header
-        viz_msg.header.stamp = timestamp;
-        viz_msg.header.frame_id = "map";
-        
-        // Set metadata
-        viz_msg.info.width = width_cells;
-        viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = internal_resolution_;
-        
-        // Origin position in rover frame 2D
-        viz_msg.info.origin.position.x = origin_x;
-        viz_msg.info.origin.position.y = origin_y;
-        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
-        
-        // -90 degrees around Z axis
-        viz_msg.info.origin.orientation.x = 0;
-        viz_msg.info.origin.orientation.y = 0;
-        viz_msg.info.origin.orientation.z = -0.7071068;
-        viz_msg.info.origin.orientation.w = 0.7071068; 
-        
-        // Allocate data array
-        viz_msg.data.resize(width_cells * height_cells);
-        
-        // Convert costs to OccupancyGrid format
-        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
-        // Scale our 0-255 costs to 0-100 range
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {            
-            if (averaged_grid[i] >= 255.0f)
-            {
-                viz_msg.data[i] = -1; // Unknown
-            }
-            else
-            {
-                // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
-            }
+        switch (type)
+        {
+            case CostmapType::SEGMENTATION: return "segmentation";
+            case CostmapType::SNE: return "SNE";
+            case CostmapType::ROUGHNESS: return "roughness";
+            case CostmapType::COMBINED: return "combined";
+            default: return "unknown";
         }
-        
-        // Publish the visualization costmap
-        costmap_roughness_viz_pub_->publish(viz_msg);
     }
     
-
-     void publishCombinedCostmap(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                           const rclcpp::Time& timestamp)
-    {
-        // Create Costmap message
-        auto costmap_msg = nav2_msgs::msg::Costmap();
-        
-        // Set header
-        costmap_msg.header.stamp = timestamp;
-        costmap_msg.header.frame_id = "map"; 
-        
-        // Set metadata
-        costmap_msg.metadata.size_x = height_cells;
-        costmap_msg.metadata.size_y = width_cells;
-        costmap_msg.metadata.resolution = output_resolution_;
-        
-        // Set origin (position of cell (0,0) in the map frame)
-        costmap_msg.metadata.origin.position.x = origin_x;
-        costmap_msg.metadata.origin.position.y = origin_y;
-        costmap_msg.metadata.origin.position.z = 0;
-        
-        // Keep initial orientation X foward, Y left, Z up
-        costmap_msg.metadata.origin.orientation.x = 0;
-        costmap_msg.metadata.origin.orientation.y = 0;
-        costmap_msg.metadata.origin.orientation.z = -0.7071068;
-        costmap_msg.metadata.origin.orientation.w = 0.7071068;
-        
-        // Allocate data array
-        costmap_msg.data.resize(width_cells * height_cells);
-        
-        // Convert averaged costs directly to uint8_t (already in 0-255 range)
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {
-            float cost = averaged_grid[i];
-            
-            // Costs are already in 0-255 range from createAveragedGrid
-            // Just clamp and convert to uint8_t
-            if (cost >= 255.0f)
-            {
-                costmap_msg.data[i] = 255;
-            }
-            else if (cost <= 0.0f)
-            {
-                costmap_msg.data[i] = 0;
-            }
-            else
-            {
-                costmap_msg.data[i] = static_cast<uint8_t>(cost);
-            }
-        }
-        
-        // Publish the costmap
-        costmap_combined_pub_->publish(costmap_msg);
-        
-        // Also publish as OccupancyGrid for RViz2 visualization
-        if (publish_costmap_visualizations_){
-            publishCombinedCostmapViz(averaged_grid, width_cells, height_cells, origin_x, origin_y, timestamp);
-        }
-
-        RCLCPP_DEBUG(this->get_logger(), "Published costmap with %dx%d cells", width_cells, height_cells);
-    }
-
-    void publishCombinedCostmapViz(const std::vector<float>& averaged_grid, uint32_t width_cells, uint32_t height_cells, float origin_x, float origin_y,
-                              const rclcpp::Time& timestamp)
-    {
-        // Create OccupancyGrid message for RViz2 visualization
-        auto viz_msg = nav_msgs::msg::OccupancyGrid();
-        
-        // Set header
-        viz_msg.header.stamp = timestamp;
-        viz_msg.header.frame_id = "map";
-        
-        // Set metadata
-        viz_msg.info.width = width_cells;
-        viz_msg.info.height = height_cells;
-        viz_msg.info.resolution = output_resolution_;
-        
-        // Origin position in rover frame 2D
-        viz_msg.info.origin.position.x = origin_x;
-        viz_msg.info.origin.position.y = origin_y;
-        viz_msg.info.origin.position.z = 0.0;  // 2D costmap on ground plane
-        
-        // -90 degrees around Z axis
-        viz_msg.info.origin.orientation.x = 0;
-        viz_msg.info.origin.orientation.y = 0;
-        viz_msg.info.origin.orientation.z = -0.7071068;
-        viz_msg.info.origin.orientation.w = 0.7071068; 
-        
-        // Allocate data array
-        viz_msg.data.resize(width_cells * height_cells);
-        
-        // Convert costs to OccupancyGrid format
-        // OccupancyGrid uses: -1 = unknown, 0 = free, 100 = occupied
-        // Scale our 0-255 costs to 0-100 range
-        for (size_t i = 0; i < width_cells * height_cells; ++i)
-        {
-            
-            if (averaged_grid[i] >= 255.0f)
-            {
-                viz_msg.data[i] = -1; // Unknown
-            }
-            else
-            {
-                // Scale from 0-255 to 0-100
-                viz_msg.data[i] = static_cast<int8_t>(averaged_grid[i] * 100.0f / 254.0f);
-            }
-        }
-        
-        // Publish the visualization costmap
-        costmap_combined_viz_pub_->publish(viz_msg);
-    }
-    
-    
-
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
     

@@ -13,10 +13,14 @@
         height: 540  # Camera image height (pixels)
 
       intrinsics:
-        fx: 685.51  # Focal length in pixels (x-axis)
-        fy: 189.06  # Focal length in pixels (y-axis)
-        cx: 480.00  # Principal point x-coordinate in pixels
-        cy: 270.00  # Principal point y-coordinate in pixels
+        # fx: 685.51  # Focal length in pixels (x-axis)
+        # fy: 189.06  # Focal length in pixels (y-axis)
+        # cx: 480.00  # Principal point x-coordinate in pixels
+        # cy: 270.00  # Principal point y-coordinate in pixels
+        fx: 368.0  # Focal length in pixels (x-axis)
+        fy: 368.0  # Focal length in pixels (y-axis)
+        cx: 480.0 # Principal point x-coordinate in pixels
+        cy: 270.0  # Principal point y-coordinate in pixels
 
       # Static transform from rover frame to camera frame
       transform:
@@ -47,11 +51,6 @@
         verbose: true       # Print detailed results
         save_txt: false     # Save results to txt files
         save_conf: false    # Save confidences in labels
-
-    #! Rover parameters
-    rover:
-      width: 1.0  # Rover width (meters)
-      length: 1.2  # Rover length (meters)
     
     #! Costmap parameters
     costmap:
@@ -59,18 +58,20 @@
       publish_visualizations: true
       internal_resolution: 0.01  # Internal costmap resolution (meters per cell)
       output_resolution: 0.03  # Costmap resolution (meters per cell)
-      confidence_dampening: 0.75  # Dampening factor for confidence influence on cost (0.0-1.0)
-
-      # Costmap weights should sum to 1
-      weight_sne: 0.2  # Weight for SNE costmap
-      weight_segmentation: 0.6  # Weight for segmentation costmap
-      weight_roughness: 0.2  # Weight for roughness costmap
-      
-      segmentation:
-        dilation_enabled: true
+     
+      segmentation_costmap:
+        dilation_enabled: true # Enable dilation of segmentation costmap
         dilation_kernel_size: 3
         dilation_min_confidence: 0.7
-        
+        confidence_dampening: 0.75  # Dampening factor for confidence influence on cost (0.0-1.0)
+
+      # Costmap weights should sum to 1
+      combined_costmap:
+        weights:
+          sne: 0.2 # Weight for SNE costmap
+          segmentation: 0.6  # Weight for segmentation costmap
+          roughness: 0.2  # Weight for roughness costmap
+          
     
     #! Class risk parameters
     class_risks:
