@@ -323,20 +323,12 @@ private:
 
         // Publish individual layers if enabled
         if (publish_individual_layers_)
-        {
-            // Downscale individual costmaps to output resolution
-            auto [sne_costmap_ds, sne_width_ds, sne_height_ds] = downscaleCostGrid(
-                sne_costmap, sne_width, sne_height, internal_resolution_, output_resolution_);
-            auto [seg_costmap_ds, seg_width_ds, seg_height_ds] = downscaleCostGrid(
-                seg_costmap, seg_width, seg_height, internal_resolution_, output_resolution_);
-            auto [roughness_costmap_ds, roughness_width_ds, roughness_height_ds] = downscaleCostGrid(
-                roughness_costmap, sne_width, sne_height, internal_resolution_, output_resolution_);
-            
-            publishCostmap(sne_costmap_ds, sne_width_ds, sne_height_ds, sne_origin_x, sne_origin_y, 
+        { 
+            publishCostmap(sne_costmap, sne_width, sne_height, sne_origin_x, sne_origin_y, 
                         timestamp, CostmapType::SNE);
-            publishCostmap(seg_costmap_ds, seg_width_ds, seg_height_ds, seg_origin_x, seg_origin_y, 
+            publishCostmap(seg_costmap, seg_width, seg_height, seg_origin_x, seg_origin_y, 
                         timestamp, CostmapType::SEGMENTATION);
-            publishCostmap(roughness_costmap_ds, sne_width_ds, sne_height_ds, sne_origin_x, sne_origin_y, 
+            publishCostmap(roughness_costmap, sne_width, sne_height, sne_origin_x, sne_origin_y, 
                         timestamp, CostmapType::ROUGHNESS);
         }
         
@@ -1834,11 +1826,11 @@ private:
         switch (type)
         {
             case CostmapType::SEGMENTATION:
-                return {costmap_segmentation_pub_, costmap_segmentation_viz_pub_, output_resolution_};
+                return {costmap_segmentation_pub_, costmap_segmentation_viz_pub_, internal_resolution_};
             case CostmapType::SNE:
-                return {costmap_sne_pub_, costmap_sne_viz_pub_, output_resolution_};
+                return {costmap_sne_pub_, costmap_sne_viz_pub_, internal_resolution_};
             case CostmapType::ROUGHNESS:
-                return {costmap_roughness_pub_, costmap_roughness_viz_pub_, output_resolution_};
+                return {costmap_roughness_pub_, costmap_roughness_viz_pub_, internal_resolution_};
             case CostmapType::COMBINED:
                 return {costmap_combined_pub_, costmap_combined_viz_pub_, output_resolution_};
         }
