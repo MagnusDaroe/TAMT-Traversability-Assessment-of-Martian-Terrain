@@ -62,9 +62,6 @@ All parameters are configured in `cost_module/config/params.yaml`.
 - **Intrinsics**: Focal lengths (fx, fy), principal point (cx, cy)
 - **Resolution**: Image width and height
 
-### Rover Dimensions
-- Physical width and length for footprint calculations
-
 ### Segmentation Model
 - **Model**: Path to trained model file, computation device (GPU/CPU)
 - **Inference**: Confidence threshold, IoU threshold for NMS, input image size, max detections
