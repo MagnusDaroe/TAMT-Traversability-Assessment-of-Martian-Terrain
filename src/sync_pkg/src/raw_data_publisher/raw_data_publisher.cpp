@@ -85,7 +85,7 @@ public:
     // Set up paths for new structure
     images_dir_ = data_dir_ / "images";
     depth_dir_ = data_dir_ / "depth";
-    camposes_file_ = data_dir_ / "cam_poses.csv";
+    camposes_file_ = data_dir_ / "rover_poses.csv";
 
     // Validate structure
     if (!fs::exists(images_dir_) || !fs::is_directory(images_dir_)) {

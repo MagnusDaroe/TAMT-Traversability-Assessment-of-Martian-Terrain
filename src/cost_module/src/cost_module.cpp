@@ -869,7 +869,7 @@ private:
             {
 
             }
-            else if (z > max_distance_ || std::isnan(z) || std::isinf(z) )
+            else if (std::isnan(z) || std::isinf(z))
             {
                 confidence = 0.0f;
                 points_beyond_max_distance++;
@@ -1029,8 +1029,8 @@ private:
             float ny = normals_rover[i * 3 + 1];
             float nz = normals_rover[i * 3 + 2];
             
-            // Set normals to [0, 0, 0] if z (depth) exceeds max_distance
-            if (z > max_distance_ || std::isnan(z) || std::isinf(z))
+            // Set normals to [0, 0, 0] if invalid data
+            if (std::isnan(z) || std::isinf(z))
             {
                 nx = 0.0f;
                 ny = 0.0f;
@@ -1652,21 +1652,31 @@ private:
         // Transform each point to the rover frame
         for (size_t i = 0; i < num_pixels; ++i)
         {
-            // Extract point coordinates in camera frame
-            float x_cam = points[i * 3 + 0];
-            float y_cam = points[i * 3 + 1];
-            float z_cam = points[i * 3 + 2];
+            tf2::Vector3 point_rover(std::numeric_limits<float>::quiet_NaN(), 
+                                      std::numeric_limits<float>::quiet_NaN(), 
+                                      std::numeric_limits<float>::quiet_NaN());
+
+            float ray_length = std::sqrt(points[i * 3 + 0] * points[i * 3 + 0] + 
+                                        points[i * 3 + 1] * points[i * 3 + 1] + 
+                                        points[i * 3 + 2] * points[i * 3 + 2]);
             
-            tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
-            tf2::Vector3 point_rover;
-            if (normals) {
-                // Transform normal vector to rover frame (rotation only, no translation)
-                //point_rover = rover_to_global_transform_.getBasis() * cam_x_to_rover_transform_.getBasis() * point_cam; //! FIX! When rover transform is fixed apply this
-                point_rover = cam_x_to_rover_transform_.getBasis() * point_cam;
-            }
-            else {
-                // Transform point to rover frame
-                point_rover = cam_x_to_rover_transform_ * point_cam;
+            if (ray_length <= max_distance_) {
+                // Extract point coordinates in camera frame
+                float x_cam = points[i * 3 + 0];
+                float y_cam = points[i * 3 + 1];
+                float z_cam = points[i * 3 + 2];
+                
+                tf2::Vector3 point_cam(x_cam, y_cam, z_cam);
+            
+                if (normals) {
+                    // Transform normal vector to rover frame (rotation only, no translation)
+                    //point_rover = rover_to_global_transform_.getBasis() * cam_x_to_rover_transform_.getBasis() * point_cam; //! FIX! When rover transform is fixed apply this
+                    point_rover = cam_x_to_rover_transform_.getBasis() * point_cam;
+                }
+                else {
+                    // Transform point to rover frame
+                    point_rover = cam_x_to_rover_transform_ * point_cam;
+                }
             }
 
             // Store transformed data: [x, y, z] in rover frame
