@@ -53,13 +53,25 @@ The system generates traversability costmaps visualizable in RViz2:
 
 All parameters are configured in `cost_module/config/params.yaml`.
 
+### Synchronization
+- **Timeout**: Maximum wait time for sensor data synchronization before error
+
 ### Camera Configuration
 - **Mounting**: Tilt angle, height above ground, static transform (rover → camera)
 - **Optics**: Horizontal/vertical FOV, maximum sensing range
 - **Intrinsics**: Focal lengths (fx, fy), principal point (cx, cy)
 - **Resolution**: Image width and height
 
+### Rover Dimensions
+- Physical width and length for footprint calculations
+
+### Segmentation Model
+- **Model**: Path to trained model file, computation device (GPU/CPU)
+- **Inference**: Confidence threshold, IoU threshold for NMS, input image size, max detections
+- **Output**: Verbosity, save options for results and confidence scores
+
 ### Costmap Settings
+- **Auto-fetch**: Automatically request new sensor data after processing completes
 - **Resolution**: Internal processing resolution vs. output resolution
 - **Publishing**: Control individual layer and visualization outputs
 - **Weights**: Relative importance of each layer (must sum to 1.0)
@@ -67,6 +79,7 @@ All parameters are configured in `cost_module/config/params.yaml`.
   - Segmentation weight
   - Roughness weight
 
-### Segmentation Parameters
+### Segmentation Costmap
 - **Class risks**: Risk values for terrain types (soil, bedrock, sand, rocks, holes)
-- **Dilation**: Enable/disable boundary expansion, kernel size, confidence threshold
+- **Dilation**: Enable/disable boundary expansion, kernel size, minimum confidence threshold
+- **Confidence dampening**: Factor controlling how confidence affects final cost values (0.0-1.0)
