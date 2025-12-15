@@ -39,17 +39,6 @@ ament_target_dependencies(publish_raw_data
   OpenCV
 )
 
-# This node publishes the (unsynchronised) raw data read from /frame_data folder according to the project folder convention
-add_executable(publish_updated_raw_data src/raw_data_publisher/updated_raw_data_publisher.cpp)
-ament_target_dependencies(publish_updated_raw_data
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-  cv_bridge
-  geometry_msgs
-  OpenCV
-)
-
 # This node provides a service to synchronise data and publish synchronised data topic
 add_executable(data_synchroniser src/synchronised_data_publisher/sync_service_node.cpp)
 ament_target_dependencies(data_synchroniser
@@ -79,7 +68,6 @@ ament_target_dependencies(data_synchroniser_client
 install(TARGETS
   publish_raw_data
   data_synchroniser
-  publish_updated_raw_data
   data_synchroniser_client
   DESTINATION lib/${PROJECT_NAME}
 )

@@ -332,14 +332,14 @@ private:
                         timestamp, CostmapType::ROUGHNESS);
         }
         
-        // Trigger sync service call
-            // if (trigger_sync_client_->service_is_ready()) {
-            //     auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
-            //     trigger_sync_client_->async_send_request(request,
-            //         std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
-            // } else {
-            //     RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
-            // }
+        //Trigger sync service call
+        if (trigger_sync_client_->service_is_ready()) {
+            auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
+            trigger_sync_client_->async_send_request(request,
+                std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
+        } else {
+            RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
+        }
     }
 
     void pointcloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -523,8 +523,6 @@ private:
 {
     std::vector<float> filled_costmap = costmap;
     
-    RCLCPP_INFO(this->get_logger(), "fillHolesWithConvexHull START");
-    
     // Step 1: Create hole segmentation mask
     cv::Mat hole_mask(image_height, image_width, CV_8UC1, cv::Scalar(0));
     
@@ -548,9 +546,7 @@ private:
     // Step 2: Find contours
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(closed_hole_mask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    
-    RCLCPP_INFO(this->get_logger(), "Found %zu separate hole region(s)", contours.size());
-    
+        
     float hole_cost = std::min(254.0f, risk_params_[hole_id_] * 255.0f);
     
     // Step 3: Process each hole region
@@ -558,9 +554,7 @@ private:
     {
         double area = cv::contourArea(contours[i]);
         if (area < 100.0) continue;
-        
-        RCLCPP_INFO(this->get_logger(), "Processing hole region %zu (area=%.1f)", i, area);
-        
+                
         // Create mask for this hole
         cv::Mat single_hole_mask = cv::Mat::zeros(image_height, image_width, CV_8UC1);
         cv::drawContours(single_hole_mask, contours, i, cv::Scalar(255), cv::FILLED);
@@ -614,14 +608,10 @@ private:
                 }
             }
         }
-        
-        RCLCPP_INFO(this->get_logger(), 
-                    "Hole region %zu: checked %d rim pixels, %d with valid depth, %zu projected to costmap", 
-                    i, rim_pixels_checked, valid_rim_pixels, costmap_points.size());
-        
+                
         if (costmap_points.size() < 3)
         {
-            RCLCPP_WARN(this->get_logger(), "Hole region %zu: insufficient rim points, skipping", i);
+            //RCLCPP_WARN(this->get_logger(), "Hole region %zu: insufficient rim points, skipping", i);
             continue;
         }
         
@@ -629,8 +619,7 @@ private:
         std::vector<cv::Point> hull;
         cv::convexHull(costmap_points, hull);
         
-        RCLCPP_INFO(this->get_logger(), "Hole region %zu: convex hull has %zu points", i, hull.size());
-        
+     
         // Step 7: Fill hull
         cv::Mat fill_mask = cv::Mat::zeros(costmap_height, costmap_width, CV_8UC1);
         cv::fillConvexPoly(fill_mask, hull, cv::Scalar(255));
@@ -647,8 +636,6 @@ private:
                 }
             }
         }
-        
-        RCLCPP_INFO(this->get_logger(), "Hole region %zu: filled %d costmap cells", i, filled_cells);
     }
     
     return filled_costmap;
@@ -1092,11 +1079,6 @@ private:
     std::vector<float> dilate(const std::vector<float>& image, int height, int width, int iterations = 1, bool dilate_255 = false) {
         std::vector<float> dilated_image = image;  // Start with copy of original image
         
-        RCLCPP_INFO(this->get_logger(), "Starting %d dilation iteration(s) on image of size %dx%d (dilate_255=%s)", 
-                    iterations, width, height, dilate_255 ? "true" : "false");
-        RCLCPP_INFO(this->get_logger(), "Image size: %zu", image.size());
-        RCLCPP_INFO(this->get_logger(), "Width: %d, Height: %d", width, height);
-        
         for (int iter = 0; iter < iterations; iter++) {
             // Create temporary output for this iteration - copy current state
             std::vector<float> temp_image = dilated_image;
@@ -1166,8 +1148,6 @@ private:
             
             // Update dilated_image for next iteration
             dilated_image = temp_image;
-            
-            RCLCPP_INFO(this->get_logger(), "Completed dilation iteration %d/%d", iter + 1, iterations);
         }
         
         return dilated_image;
@@ -1253,9 +1233,7 @@ private:
         
         // Create a COPY inside the function to work with
         std::vector<float> scaled_image = image;
-        
-        // ... all your existing code, but work on scaled_image ...
-                                
+                                        
         double input_min = 999999.0;
         double input_max = -999999.0;
         for (const auto& val : image) {  // Read from original
@@ -1263,8 +1241,6 @@ private:
             if (val < input_min) input_min = val;
             if (val > input_max) input_max = val;
         }
-        
-        RCLCPP_INFO(this->get_logger(), "Input image min: %f, max: %f", input_min, input_max);
         
         int pixel_count = width * height;
         for (int i = 0; i < pixel_count; i++) {
@@ -1294,12 +1270,7 @@ private:
                 count_val++;
             }
         }
-        
-        double avg_val = (count_val > 0) ? sum_val / count_val : 0.0;
-        RCLCPP_INFO(this->get_logger(), "Scaled image average: %f", avg_val);
-        RCLCPP_INFO(this->get_logger(), "Scaled image min: %f, max: %f", min_val, max_val);
-        RCLCPP_INFO(this->get_logger(), "HELLO IS ANYTHING WORKING");
-        
+
         return scaled_image;
     }
 

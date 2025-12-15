@@ -67,7 +67,7 @@ def generate_launch_description():
     # 5. Publisher all data
     publisher_all = Node(
         package='sync_pkg',
-        executable='publish_updated_raw_data',
+        executable='publish_raw_data',
         name='raw_data_publisher',
         parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'WARN'],

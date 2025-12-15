@@ -8,17 +8,19 @@ Topics:
   /camera_pose
 
 Directory Structure:
-/sync_pkg/data/
-  ├── data_1/
-  │   ├── rgb_img_00001.png
-  │   ├── depth_00001.npy
-  │   └── campose_00001.csv
-  ├── data_2/
-  │   ├── ...
-  └── data_N/
+/sync_pkg/frame_data/
+  ├── images/
+  │   ├── rgb_000000.png
+  │   ├── rgb_000001.png
+  │   └── ...
+  ├── depth/
+  │   ├── depth_000000.npy
+  │   ├── depth_000001.npy
+  │   └── ...
+  └── cam_poses.csv
 
 Command example:
-  ros2 run sync_pkg publish_raw_data --ros-args -p publish_frequency_hz:=0.5 -p loop_playback:=true
+  ros2 run sync_pkg publish_updated_raw_data --ros-args -p publish_frequency_hz:=0.5 -p loop_playback:=true
 */
 
 #include <rclcpp/rclcpp.hpp>
@@ -34,6 +36,12 @@ Command example:
 
 namespace fs = std::filesystem;
 
+struct FrameData {
+  std::string rgb_filename;
+  double pos_x, pos_y, pos_z;
+  double quat_x, quat_y, quat_z, quat_w;
+};
+
 class UnifiedDataPublisher : public rclcpp::Node
 {
 public:
@@ -41,7 +49,7 @@ public:
   : Node("unified_data_publisher"), current_frame_idx_(0)
   {
     // Declare and get parameters
-    this->declare_parameter<double>("publish_frequency_hz", 1.0);
+    this->declare_parameter<double>("publish_frequency_hz", 10.0);
     this->declare_parameter<bool>("loop_playback", true);
     this->declare_parameter<std::string>("frame_id", "camera_frame");
 
@@ -55,9 +63,9 @@ public:
     qos.durability(rclcpp::DurabilityPolicy::Volatile);
 
     // Publishers
-    rgb_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/left_image", qos);
+    rgb_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/rgb", qos);
     depth_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/depth", qos);
-    pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/camera_pose", qos);
+    pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/rover_pose", qos);
 
     // Locate data directory
     try {
@@ -67,33 +75,39 @@ public:
       return;
     }
 
-    data_dir_ = fs::path(package_share_dir_) / "data";
+    data_dir_ = fs::path(package_share_dir_) / "frame_data";
 
     if (!fs::exists(data_dir_) || !fs::is_directory(data_dir_)) {
       RCLCPP_FATAL(this->get_logger(), "Data directory not found: %s", data_dir_.string().c_str());
       return;
     }
 
-    // Collect dataset folders
-    for (const auto &entry : fs::directory_iterator(data_dir_)) {
-      if (entry.is_directory() && entry.path().filename().string().find("data_") == 0) {
-        dataset_dirs_.push_back(entry.path());
-      }
-    }
+    // Set up paths for new structure
+    images_dir_ = data_dir_ / "images";
+    depth_dir_ = data_dir_ / "depth";
+    camposes_file_ = data_dir_ / "cam_poses.csv";
 
-    if (dataset_dirs_.empty()) {
-      RCLCPP_FATAL(this->get_logger(), "No valid data_X directories found.");
+    // Validate structure
+    if (!fs::exists(images_dir_) || !fs::is_directory(images_dir_)) {
+      RCLCPP_FATAL(this->get_logger(), "Images directory not found: %s", images_dir_.string().c_str());
+      return;
+    }
+    if (!fs::exists(depth_dir_) || !fs::is_directory(depth_dir_)) {
+      RCLCPP_FATAL(this->get_logger(), "Depth directory not found: %s", depth_dir_.string().c_str());
+      return;
+    }
+    if (!fs::exists(camposes_file_)) {
+      RCLCPP_FATAL(this->get_logger(), "camposes.csv not found: %s", camposes_file_.string().c_str());
       return;
     }
 
-    // Sort numerically
-    std::sort(dataset_dirs_.begin(), dataset_dirs_.end(), [](const fs::path &a, const fs::path &b) {
-      auto numA = std::stoi(a.filename().string().substr(5));
-      auto numB = std::stoi(b.filename().string().substr(5));
-      return numA < numB;
-    });
+    // Parse camposes.csv and build frame list
+    if (!parseCamposesCSV()) {
+      RCLCPP_FATAL(this->get_logger(), "Failed to parse camposes.csv");
+      return;
+    }
 
-    RCLCPP_INFO(this->get_logger(), "Found %zu dataset folders", dataset_dirs_.size());
+    RCLCPP_INFO(this->get_logger(), "Loaded %zu frames from camposes.csv", frames_.size());
 
     // Setup timer for publishing
     auto period = std::chrono::duration<double>(1.0 / publish_frequency_);
@@ -113,17 +127,86 @@ private:
   std::string frame_id_;
   std::string package_share_dir_;
   fs::path data_dir_;
-  std::vector<fs::path> dataset_dirs_;
+  fs::path images_dir_;
+  fs::path depth_dir_;
+  fs::path camposes_file_;
+  std::vector<FrameData> frames_;
   size_t current_frame_idx_;
+
+  bool parseCamposesCSV()
+  {
+    std::ifstream file(camposes_file_);
+    if (!file.is_open()) {
+      RCLCPP_ERROR(this->get_logger(), "Cannot open cam_poses.csv");
+      return false;
+    }
+
+    std::string line;
+    
+    while (std::getline(file, line)) {
+      // Skip empty lines and comment lines
+      if (line.empty() || line[0] == '#') continue;
+      
+      // Skip header line (contains "frame_index")
+      if (line.find("frame_index") != std::string::npos) continue;
+
+      std::stringstream ss(line);
+      std::vector<std::string> tokens;
+      std::string token;
+      
+      while (std::getline(ss, token, ',')) {
+        tokens.push_back(token);
+      }
+
+      // Expecting at least 9 columns: index, rgb_filename, x, y, z, qx, qy, qz, qw
+      if (tokens.size() < 9) {
+        RCLCPP_WARN(this->get_logger(), "Skipping malformed line: %s", line.c_str());
+        continue;
+      }
+
+      FrameData frame;
+      frame.rgb_filename = tokens[1];  // Second column is RGB filename
+      frame.pos_x = std::stod(tokens[2]);
+      frame.pos_y = std::stod(tokens[3]);
+      frame.pos_z = std::stod(tokens[4]);
+      frame.quat_x = std::stod(tokens[5]);
+      frame.quat_y = std::stod(tokens[6]);
+      frame.quat_z = std::stod(tokens[7]);
+      frame.quat_w = std::stod(tokens[8]);
+
+      frames_.push_back(frame);
+    }
+
+    file.close();
+    return !frames_.empty();
+  }
+
+  std::string extractFrameNumber(const std::string &rgb_filename)
+  {
+    // Extract number from images/rgb_000000.png -> 000000
+    // First get just the filename part
+    size_t slash_pos = rgb_filename.find_last_of("/\\");
+    std::string filename = (slash_pos != std::string::npos) 
+                           ? rgb_filename.substr(slash_pos + 1) 
+                           : rgb_filename;
+    
+    // Now extract the number: rgb_000000.png -> 000000
+    size_t underscore_pos = filename.find('_');
+    size_t dot_pos = filename.find('.');
+    if (underscore_pos != std::string::npos && dot_pos != std::string::npos) {
+      return filename.substr(underscore_pos + 1, dot_pos - underscore_pos - 1);
+    }
+    return "";
+  }
 
   void publishNextFrame()
   {
-    if (dataset_dirs_.empty()) {
-      RCLCPP_WARN(this->get_logger(), "No datasets to publish.");
+    if (frames_.empty()) {
+      RCLCPP_WARN(this->get_logger(), "No frames to publish.");
       return;
     }
 
-    if (current_frame_idx_ >= dataset_dirs_.size()) {
+    if (current_frame_idx_ >= frames_.size()) {
       if (loop_playback_) {
         current_frame_idx_ = 0;
         RCLCPP_INFO(this->get_logger(), "Looping back to first frame.");
@@ -134,24 +217,37 @@ private:
       }
     }
 
-    fs::path current_dir = dataset_dirs_[current_frame_idx_];
-    RCLCPP_INFO(this->get_logger(), "Publishing frame from: %s", current_dir.string().c_str());
+    const FrameData &frame = frames_[current_frame_idx_];
+    RCLCPP_INFO(this->get_logger(), "Publishing frame %zu: %s", current_frame_idx_, frame.rgb_filename.c_str());
 
-    fs::path rgb_path, depth_path, campose_path;
-    for (const auto &entry : fs::directory_iterator(current_dir)) {
-      std::string name = entry.path().filename().string();
-      if (name.find("rgb_img_") == 0) rgb_path = entry.path();
-      else if (name.find("depth_") == 0) depth_path = entry.path();
-      else if (name.find("campose_") == 0) campose_path = entry.path();
-    }
+    // Build file paths
+    // RGB filename is in format "images/rgb_000000.png", so just use it directly
+    fs::path rgb_path = data_dir_ / frame.rgb_filename;
+    
+    // Extract frame number from RGB filename to build depth filename
+    std::string frame_number = extractFrameNumber(frame.rgb_filename);
+    std::string depth_filename = "depth_" + frame_number + ".npy";
+    fs::path depth_path = depth_dir_ / depth_filename;
 
     auto timestamp = this->now();
 
-    if (!rgb_path.empty()) publishRgb(rgb_path, timestamp);
-    if (!depth_path.empty()) publishDepth(depth_path, timestamp);
-    if (!campose_path.empty()) publishPose(campose_path, timestamp);
+    // Publish RGB
+    if (fs::exists(rgb_path)) {
+      publishRgb(rgb_path, timestamp);
+    } else {
+      RCLCPP_WARN(this->get_logger(), "RGB file not found: %s", rgb_path.string().c_str());
+    }
 
-    // “Clear” temporary memory by just letting local vars go out of scope
+    // Publish Depth
+    if (fs::exists(depth_path)) {
+      publishDepth(depth_path, timestamp);
+    } else {
+      RCLCPP_WARN(this->get_logger(), "Depth file not found: %s", depth_path.string().c_str());
+    }
+
+    // Publish Pose (from CSV data)
+    publishPose(frame, timestamp);
+
     current_frame_idx_++;
   }
 
@@ -243,36 +339,18 @@ private:
     depth_pub_->publish(msg);
   }
 
-  void publishPose(const fs::path &path, const rclcpp::Time &stamp)
+  void publishPose(const FrameData &frame, const rclcpp::Time &stamp)
   {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-      RCLCPP_ERROR(this->get_logger(), "Cannot open campose file: %s", path.string().c_str());
-      return;
-    }
-
-    std::string line;
-    std::getline(file, line); // skip header
-    std::getline(file, line); // data line
-    file.close();
-
-    std::stringstream ss(line);
-    std::vector<std::string> tokens;
-    std::string token;
-    while (std::getline(ss, token, ',')) tokens.push_back(token);
-
-    if (tokens.size() < 9) return;
-
     geometry_msgs::msg::PoseStamped pose_msg;
     pose_msg.header.stamp = stamp;
     pose_msg.header.frame_id = frame_id_;
-    pose_msg.pose.position.x = std::stod(tokens[2]);
-    pose_msg.pose.position.y = std::stod(tokens[3]);
-    pose_msg.pose.position.z = std::stod(tokens[4]);
-    pose_msg.pose.orientation.x = std::stod(tokens[5]);
-    pose_msg.pose.orientation.y = std::stod(tokens[6]);
-    pose_msg.pose.orientation.z = std::stod(tokens[7]);
-    pose_msg.pose.orientation.w = std::stod(tokens[8]);
+    pose_msg.pose.position.x = frame.pos_x;
+    pose_msg.pose.position.y = frame.pos_y;
+    pose_msg.pose.position.z = frame.pos_z;
+    pose_msg.pose.orientation.x = frame.quat_x;
+    pose_msg.pose.orientation.y = frame.quat_y;
+    pose_msg.pose.orientation.z = frame.quat_z;
+    pose_msg.pose.orientation.w = frame.quat_w;
 
     pose_pub_->publish(pose_msg);
   }

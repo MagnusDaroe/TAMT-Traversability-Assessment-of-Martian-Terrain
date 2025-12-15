@@ -1,6 +1,9 @@
 /tamt/**:
   ros__parameters:
     #! Camera parameters
+    synchronization:
+      timeout_sec: 20.0  # Time to wait before giving error 
+
     camera:
       tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
       fov_x: 110.0  # Field of view in X direction (degrees) Horizontal
@@ -17,8 +20,8 @@
         # fy: 189.06  # Focal length in pixels (y-axis)
         # cx: 480.00  # Principal point x-coordinate in pixels
         # cy: 270.00  # Principal point y-coordinate in pixels
-        fx: 368.0  # Focal length in pixels (x-axis)
-        fy: 368.0  # Focal length in pixels (y-axis)
+        fx: 336.1  # Focal length in pixels (x-axis)
+        fy: 385.6  # Focal length in pixels (y-axis)
         cx: 480.0 # Principal point x-coordinate in pixels
         cy: 270.0  # Principal point y-coordinate in pixels
 
