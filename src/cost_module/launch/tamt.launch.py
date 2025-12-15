@@ -9,7 +9,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('cost_module')
     
     # Path to your config file
-    config_file = os.path.join(pkg_share, 'config', 'initial_params.yaml')
+    config_file = os.path.join(pkg_share, 'config', 'params.yaml')
 
 
     
