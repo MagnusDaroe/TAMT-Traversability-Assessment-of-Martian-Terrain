@@ -1,3 +1,0 @@
-# convention: world_T_cam, Isaac world frame, camera +X right, +Y up, -Z forward, quaternion Hamilton [x,y,z,w]
-frame_index,image,tx,ty,tz,qx,qy,qz,qw
-0,images/rgb_000000.png,1.709320068359375,-4.636882781982422,0.800000011920929,-0.1742035629157252,0.6810543062631192,0.700247409626463,-0.1243853524228503

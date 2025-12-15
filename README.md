@@ -43,7 +43,7 @@ source install/setup.bash
 
 6. Launch the costmap module
 ```bash
-ros2 launch cost_module costmap.launch.py
+ros2 launch cost_module tamt.launch.py
 ```
 
 7. call the server to publish (temporary)

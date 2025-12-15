@@ -40,18 +40,6 @@ ament_target_dependencies(surface_normal_estimator
   cv_bridge
 )
 
-# Create the depth_publisher executable
-add_executable(depth_publisher 
-  src/depth_publisher.cpp
-)
-
-# Add dependencies for depth_publisher executable
-ament_target_dependencies(depth_publisher
-  rclcpp
-  sensor_msgs
-  ament_index_cpp
-)
-
 # Link OpenCV libraries
 target_link_libraries(surface_normal_estimator
   ${OpenCV_LIBRARIES}
@@ -60,43 +48,21 @@ target_link_libraries(surface_normal_estimator
 # Install C++ executables
 install(TARGETS
   surface_normal_estimator
-  depth_publisher
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # Install Python scripts
 install(PROGRAMS
-  scripts/image_saver.py
+  #scripts/image_saver.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 ##### Install DIRECTORIES #####
 
-# Install DIODE dataset separately
-install(DIRECTORY
-  DIODE_dataset
-  DESTINATION share/${PROJECT_NAME}
-  USE_SOURCE_PERMISSIONS
-)
-
 # Install launch files (if you have them)
 install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}/
-  OPTIONAL
-)
-
-# Install config files (if you have them)
-install(DIRECTORY
-  config
-  DESTINATION share/${PROJECT_NAME}/
-  OPTIONAL
-)
-
-# Install model files
-install(DIRECTORY
-  models/
-  DESTINATION share/${PROJECT_NAME}/models
   OPTIONAL
 )
 

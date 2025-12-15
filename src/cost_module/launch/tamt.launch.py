@@ -60,7 +60,7 @@ def generate_launch_description():
         output='screen'
     )
     delayed_synchronizer = TimerAction(
-        period=7.0,
+        period=2.0,
         actions=[data_synchroniser]
     )
 
@@ -74,7 +74,7 @@ def generate_launch_description():
         output='screen'
     )
     delayed_publisher_all = TimerAction(
-        period=7.0,
+        period=2.0,
         actions=[publisher_all]
     )
 

@@ -42,6 +42,7 @@ public:
         this->declare_parameter("costmap.output_resolution", 0.05);
         this->declare_parameter("costmap.publish_individual_layers", true);
         this->declare_parameter("costmap.publish_visualizations", true);
+        this->declare_parameter("costmap.auto_fetch_enabled", false);
 
         publish_individual_layers_ = this->get_parameter("costmap.publish_individual_layers").as_bool();
         publish_costmap_visualizations_ = this->get_parameter("costmap.publish_visualizations").as_bool();
@@ -62,6 +63,7 @@ public:
         weight_segmentation_ = this->get_parameter("costmap.combined_costmap.weights.segmentation").as_double();
         weight_roughness_ = this->get_parameter("costmap.combined_costmap.weights.roughness").as_double();
         confidence_dampening_ = this->get_parameter("costmap.segmentation_costmap.confidence_dampening").as_double();
+        auto_fetch_enabled_ = this->get_parameter("costmap.auto_fetch_enabled").as_bool();
 
         // Get parameters from YAML file (or use defaults)
         camera_height_ = this->get_parameter("camera.height").as_double();
@@ -239,6 +241,11 @@ public:
                     "Forward camera ray (0,0,1) transforms to rover frame: x=%.3f, y=%.3f, z=%.3f", 
                     forward_ray_rover.x(), forward_ray_rover.y(), forward_ray_rover.z());
 
+        // Call on data
+        if (auto_fetch_enabled_){
+            triggerSyncServiceCall();
+        }
+    
     }
 
 private:
@@ -332,13 +339,9 @@ private:
                         timestamp, CostmapType::ROUGHNESS);
         }
         
-        //Trigger sync service call
-        if (trigger_sync_client_->service_is_ready()) {
-            auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
-            trigger_sync_client_->async_send_request(request,
-                std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
-        } else {
-            RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
+
+        if (auto_fetch_enabled_) {
+            triggerSyncServiceCall();
         }
     }
 
@@ -1819,6 +1822,18 @@ private:
         }
     }
     
+    //Trigger sync service call
+    void triggerSyncServiceCall()
+    {
+        if (trigger_sync_client_->service_is_ready()) {
+        auto request = std::make_shared<interfaces::srv::TriggerSync::Request>();
+        trigger_sync_client_->async_send_request(request,
+            std::bind(&Costmaps::handleSyncResponse, this, std::placeholders::_1));
+        } else {
+            RCLCPP_DEBUG(this->get_logger(), "TriggerSync service not available");
+        }   
+    }
+
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
     
@@ -1872,6 +1887,8 @@ private:
     // Costmap metrics
     costMapMetrics costmap_metrics_;
     
+    bool auto_fetch_enabled_;
+
     // Camera parameters
     double camera_height_;
     double tilt_angle_;
