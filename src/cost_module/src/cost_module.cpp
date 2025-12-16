@@ -56,6 +56,12 @@ public:
         this->declare_parameter("costmap.combined_costmap.weights.roughness", 0.0);
         this->declare_parameter("costmap.segmentation_costmap.confidence_dampening", 1.0);
 
+        //Roughness dilation params
+        this->declare_parameter("costmap.roughness_costmap.dilation_enabled", false);
+        this->declare_parameter("costmap.roughness_costmap.dilation_iterations", 1);
+        roughness_dilate_enabled_ = this->get_parameter("costmap.roughness_costmap.dilation_enabled").as_bool();
+        roughness_dilate_iterations_ = this->get_parameter("costmap.roughness_costmap.dilation_iterations").as_int();
+
         dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
         dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
         dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
@@ -1062,18 +1068,19 @@ private:
         // Dilated gradient map calculation
         std::vector<float> scaled_image = scaling(theta_grid, height, width);
         
+        if (roughness_dilate_enabled_) {
+             scaled_image = dilate(scaled_image, height, width, roughness_dilate_iterations_, false);
+        }
+        std::vector<float> gradient = gradient_magnitude(scaled_image, height, width);
+        gradient = mean_within_radius(dilated_gradient, height, width, 1);
         
-        std::vector<float> dilated_image = dilate(scaled_image, height, width, 2, false);
-        
-        std::vector<float> dilated_gradient = gradient_magnitude(dilated_image, height, width);
-
-        dilated_gradient = mean_within_radius(dilated_gradient, height, width, 1);
-
-        std::vector<float> gradient = dilate(dilated_gradient, height, width, 1, true);
-
+        if (roughness_dilate_enabled_) { 
+            gradient = dilate(dilated_gradient, height, width, roughness_dilate_iterations_, true);
+        }
+            
         std::vector<float> scaled_gradient = sigmoid_scaling(gradient, 40, 0.06, 0, 255);
 
-        return dilated_gradient;
+        return scaled_gradient;
     }
 
     // Function to dilate image (vectorized version with multiple iterations)
@@ -1887,6 +1894,8 @@ private:
     float dilation_min_confidence_;
     bool dilation_enabled_;
 
+    bool roughness_dilate_enabled_;
+    int roughness_dilate_iterations_;
 
     // Camera to rover transformation
     tf2::Transform cam_x_to_rover_transform_;
