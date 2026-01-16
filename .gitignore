@@ -14,6 +14,10 @@ yolo11n-seg.pt
 sanity_data/ 
 tempCodeRunnerFile.*
 
+src/sync_pkg/frame_*/
+
+
 # Python bytecode
 __pycache__/
 *.pyc
+

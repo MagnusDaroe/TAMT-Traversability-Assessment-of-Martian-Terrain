@@ -48,9 +48,9 @@ public:
         publish_costmap_visualizations_ = this->get_parameter("costmap.publish_visualizations").as_bool();
         
         //! Need params for dilation 
-        this->declare_parameter("costmap.segmentation.dilation_enabled", false);
-        this->declare_parameter("costmap.segmentation.dilation_kernel_size", 3);
-        this->declare_parameter("costmap.segmentation.dilation_min_confidence", 0.7);
+        this->declare_parameter("costmap.segmentation_costmap.dilation_enabled", false);
+        this->declare_parameter("costmap.segmentation_costmap.dilation_kernel_size", 3);
+        this->declare_parameter("costmap.segmentation_costmap.dilation_min_confidence", 0.7);
         this->declare_parameter("costmap.combined_costmap.weights.sne", 1.0);
         this->declare_parameter("costmap.combined_costmap.weights.segmentation", 0.0);
         this->declare_parameter("costmap.combined_costmap.weights.roughness", 0.0);
@@ -62,9 +62,9 @@ public:
         roughness_dilate_enabled_ = this->get_parameter("costmap.roughness_costmap.dilation_enabled").as_bool();
         roughness_dilate_iterations_ = this->get_parameter("costmap.roughness_costmap.dilation_iterations").as_int();
 
-        dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
-        dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
-        dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
+        dilation_enabled_ = this->get_parameter("costmap.segmentation_costmap.dilation_enabled").as_bool();
+        dilation_kernel_size_ = this->get_parameter("costmap.segmentation_costmap.dilation_kernel_size").as_int();
+        dilation_min_confidence_ = this->get_parameter("costmap.segmentation_costmap.dilation_min_confidence").as_double();
         weight_sne_ = this->get_parameter("costmap.combined_costmap.weights.sne").as_double();
         weight_segmentation_ = this->get_parameter("costmap.combined_costmap.weights.segmentation").as_double();
         weight_roughness_ = this->get_parameter("costmap.combined_costmap.weights.roughness").as_double();
@@ -222,9 +222,9 @@ public:
         // Create service client
         trigger_sync_client_ = this->create_client<interfaces::srv::TriggerSync>("trigger_sync");
         
-        // Create timer that runs every 50ms
+        // Create timer that runs every 20ms
         timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(50),
+            std::chrono::milliseconds(20),
             std::bind(&Costmaps::timerCallback, this)
         );
 
@@ -756,11 +756,7 @@ private:
                 filled_cells++;
             }
         }
-        
-        RCLCPP_INFO(this->get_logger(), 
-                    "Dilation filled %d unknown cells (kernel_size=%d)", 
-                    filled_cells, kernel_size);
-        
+                
         return dilated_costmap;
     }
 
@@ -1072,10 +1068,10 @@ private:
              scaled_image = dilate(scaled_image, height, width, roughness_dilate_iterations_, false);
         }
         std::vector<float> gradient = gradient_magnitude(scaled_image, height, width);
-        gradient = mean_within_radius(dilated_gradient, height, width, 1);
+        gradient = mean_within_radius(gradient, height, width, 1);
         
         if (roughness_dilate_enabled_) { 
-            gradient = dilate(dilated_gradient, height, width, roughness_dilate_iterations_, true);
+            gradient = dilate(gradient, height, width, roughness_dilate_iterations_, true);
         }
             
         std::vector<float> scaled_gradient = sigmoid_scaling(gradient, 40, 0.06, 0, 255);

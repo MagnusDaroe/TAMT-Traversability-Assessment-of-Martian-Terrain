@@ -8,7 +8,7 @@
       tilt_angle: 20.0  # Camera tilt angle from horizontal (degrees)
       fov_x: 110.0  # Field of view in X direction (degrees) Horizontal
       fov_y: 70.0  # Field of view in Y direction (degrees) Vertical
-      max_distance: 2.5  # Maximum sensing distance (meters)
+      max_distance: 3.0  # Maximum sensing distance (meters)
       height: 0.43  # Camera height from ground (meters)
       
       resolution:
@@ -16,10 +16,6 @@
         height: 540  # Camera image height (pixels)
 
       intrinsics:
-        # fx: 685.51  # Focal length in pixels (x-axis)
-        # fy: 189.06  # Focal length in pixels (y-axis)
-        # cx: 480.00  # Principal point x-coordinate in pixels
-        # cy: 270.00  # Principal point y-coordinate in pixels
         fx: 336.1  # Focal length in pixels (x-axis)
         fy: 385.6  # Focal length in pixels (y-axis)
         cx: 480.0 # Principal point x-coordinate in pixels
@@ -48,30 +44,24 @@
         iou: 0.50           # IoU threshold for NMS
         imgsz: 640          # Input image size
         max_det: 300        # Maximum number of detections per image
-        save_dir: '~/inference_results'  # Directory to save results
-      
-      output:
-        verbose: true       # Print detailed results
-        save_txt: false     # Save results to txt files
-        save_conf: false    # Save confidences in labels
     
     #! Costmap parameters
     costmap:
-      auto_fetch_enabled: true  # Enable automatic fetching of sensor data
+      auto_fetch_enabled: false  # Enable automatic fetching of sensor data
       publish_individual_layers: true
       publish_visualizations: true
       internal_resolution: 0.01  # Internal costmap resolution (meters per cell)
-      output_resolution: 0.03  # Costmap resolution (meters per cell)
+      output_resolution: 0.02  # Costmap resolution (meters per cell)
      
       segmentation_costmap:
-        dilation_enabled: true # Enable dilation of segmentation costmap
-        dilation_kernel_size: 3
-        dilation_min_confidence: 0.7
+        dilation_enabled: false # Enable dilation of segmentation costmap
+        dilation_kernel_size: 3 # Kernel size for dilation (odd integer)
+        dilation_min_confidence: 0.7 # Minimum confidence to consider for dilation (0.0-1.0)
         confidence_dampening: 0.75  # Dampening factor for confidence influence on cost (0.0-1.0)
 
       roughness_costmap:
         dilation_enabled: true # Enable dilation of roughness costmap
-        dilation_iterations: 2
+        dilation_iterations: 2 # Number of dilation iterations
 
       # Costmap weights should sum to 1
       combined_costmap:
@@ -82,7 +72,7 @@
           
     
     #! Class risk parameters
-    class_risks:
+    class_risks: # Risk values for each terrain class (0.0 = no risk, 1.0 = maximum risk)
       soil: 0.2
       bedrock: 0.1
       sand: 0.3
