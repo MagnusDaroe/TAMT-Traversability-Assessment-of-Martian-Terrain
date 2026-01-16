@@ -1057,7 +1057,7 @@ private:
         return points_with_normals;
     }
 
-    // roughness cost function
+     // roughness cost function
     std::vector<float> computeGradientTraversabilityCost(const std::vector<float>& theta_grid,
                                                      int height, int width) 
     {
