@@ -31,7 +31,7 @@ def generate_launch_description():
         name='surface_normal_estimator',
         namespace='tamt',
         parameters=[config_file],
-        arguments=['--ros-args', '--log-level', 'INFO'],
+        arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
 
@@ -49,39 +49,24 @@ def generate_launch_description():
         actions=[cost_module]
     )
 
-    # 4. Data synchroniser
-    data_synchroniser = Node(
-        package='sync_pkg',
-        executable='data_synchroniser',
-        name='data_synchroniser',
+    # 4. Cost module tester
+    cost_module_tester = Node(
+        package='cost_module',
+        executable='test_costmodule_all.py',
+        name='cost_module_tester',
         namespace='tamt',
         parameters=[config_file],
-        arguments=['--ros-args', '--log-level', 'WARN'],
+        arguments=['--ros-args', '--log-level', 'INFO'],
         output='screen'
     )
-    delayed_synchronizer = TimerAction(
-        period=2.0,
-        actions=[data_synchroniser]
-    )
-
-    # 5. Publisher all data
-    publisher_all = Node(
-        package='sync_pkg',
-        executable='publish_raw_data',
-        name='raw_data_publisher',
-        parameters=[config_file],
-        arguments=['--ros-args', '--log-level', 'WARN'],
-        output='screen'
-    )
-    delayed_publisher_all = TimerAction(
-        period=2.0,
-        actions=[publisher_all]
+    delayed_cost_module_tester = TimerAction(
+        period=10.0,
+        actions=[cost_module_tester]
     )
 
     return LaunchDescription([
         terrain_segmentation,
         surface_normal,
         delayed_cost_module,
-        delayed_synchronizer,
-        delayed_publisher_all
+        delayed_cost_module_tester
     ])

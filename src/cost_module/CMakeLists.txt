@@ -59,6 +59,7 @@ install(TARGETS
 # Install Python scripts
 install(PROGRAMS
   scripts/test_costmodule.py
+  scripts/test_costmodule_all.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

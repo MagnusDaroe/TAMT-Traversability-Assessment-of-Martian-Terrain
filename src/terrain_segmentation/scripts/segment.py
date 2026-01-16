@@ -8,6 +8,8 @@ from ultralytics import YOLO
 import os
 import cv2
 import numpy as np
+import time
+from collections import deque
 
 class TAMTSegmentationNode(Node):
     def __init__(self):
@@ -38,6 +40,13 @@ class TAMTSegmentationNode(Node):
 
         # Header of received image
         self.current_image_header = None
+        
+        # Timing statistics
+        self.processing_times = deque(maxlen=100)  # Store last 100 timings
+        self.frame_count = 0
+        
+        # Create timer for periodic statistics logging (every 10 seconds)
+        self.stats_timer = self.create_timer(10.0, self.log_timing_stats)
                 
         # ------ Publishers ------
         self.segmentation_mask_pub = self.create_publisher(
@@ -60,12 +69,20 @@ class TAMTSegmentationNode(Node):
     #################### Subscriber & Publisher functions ####################
 
     def image_callback(self, msg):
+        # Start timing
+        start_time = time.time()
+        
         # Convert ROS Image message to OpenCV format
         self.current_image_header = msg.header
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         
         # Run inference
         self.run_inference(cv_image)
+        
+        # Calculate and store processing time
+        processing_time = time.time() - start_time
+        self.processing_times.append(processing_time)
+        self.frame_count += 1
 
     def publish_mask_with_confidence(self, mask_with_confidence):
         """Publish segmentation mask to ROS topic"""
@@ -235,6 +252,26 @@ class TAMTSegmentationNode(Node):
             confidence_map[update_mask] = confidence
                 
         return mask_with_confidence
+    
+    def log_timing_stats(self):
+        """Log timing statistics periodically"""
+        if len(self.processing_times) == 0:
+            return
+        
+        times_array = np.array(self.processing_times)
+        mean_time = np.mean(times_array) * 1000  # Convert to ms
+        std_time = np.std(times_array) * 1000    # Convert to ms
+        min_time = np.min(times_array) * 1000
+        max_time = np.max(times_array) * 1000
+        
+        self.get_logger().info('='*60)
+        self.get_logger().info('SEGMENTATION NODE - Processing Time Statistics')
+        self.get_logger().info(f'  Frames processed: {self.frame_count}')
+        self.get_logger().info(f'  Mean: {mean_time:.2f} ms')
+        self.get_logger().info(f'  Std:  {std_time:.2f} ms')
+        self.get_logger().info(f'  Min:  {min_time:.2f} ms')
+        self.get_logger().info(f'  Max:  {max_time:.2f} ms')
+        self.get_logger().info('='*60)
     
 def main(args=None):
     rclpy.init(args=args)

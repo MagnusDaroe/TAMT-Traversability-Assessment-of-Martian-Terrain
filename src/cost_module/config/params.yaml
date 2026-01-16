@@ -47,7 +47,7 @@
     
     #! Costmap parameters
     costmap:
-      auto_fetch_enabled: false  # Enable automatic fetching of sensor data
+      auto_fetch_enabled: true  # Enable automatic fetching of sensor data
       publish_individual_layers: true
       publish_visualizations: true
       internal_resolution: 0.01  # Internal costmap resolution (meters per cell)

@@ -15,11 +15,13 @@
 #include <memory>
 #include <limits>
 #include <cstddef>
+#include <chrono>
+#include <numeric>
 
 class Costmaps : public rclcpp::Node
 {
 public:
-    Costmaps() : Node("costmaps")
+    Costmaps() : Node("costmaps"), frame_count_(0)
     {
         // Declare parameters with default values (can be overridden by YAML file)
         this->declare_parameter("camera.height", 1.0);
@@ -247,6 +249,14 @@ public:
                     "Forward camera ray (0,0,1) transforms to rover frame: x=%.3f, y=%.3f, z=%.3f", 
                     forward_ray_rover.x(), forward_ray_rover.y(), forward_ray_rover.z());
 
+        // Initialize timing statistics
+        processing_times_.reserve(100);
+        
+        // Create timer for periodic statistics logging (every 10 seconds)
+        stats_timer_ = this->create_wall_timer(
+            std::chrono::seconds(10),
+            std::bind(&Costmaps::logTimingStats, this));
+
         // Call on data
         if (auto_fetch_enabled_){
             triggerSyncServiceCall();
@@ -266,6 +276,9 @@ private:
 
     void timerCallback()
     {
+        // Start timing
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
         // Early return if data not ready
         if (!new_sne_data_ || !new_segmentation_mask_data_)
         {
@@ -344,6 +357,17 @@ private:
             publishCostmap(roughness_costmap, sne_width, sne_height, sne_origin_x, sne_origin_y, 
                         timestamp, CostmapType::ROUGHNESS);
         }
+        
+        // Calculate and store processing time
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        double processing_time_ms = duration.count() / 1000.0;
+        
+        processing_times_.push_back(processing_time_ms);
+        if (processing_times_.size() > 100) {
+            processing_times_.erase(processing_times_.begin());
+        }
+        frame_count_++;
         
 
         if (auto_fetch_enabled_) {
@@ -1933,6 +1957,37 @@ private:
     // Flags to indicate new data availability
     bool new_sne_data_ = false;
     bool new_segmentation_mask_data_ = false;
+    
+    // Timing statistics
+    std::vector<double> processing_times_;
+    size_t frame_count_;
+    rclcpp::TimerBase::SharedPtr stats_timer_;
+    
+    void logTimingStats()
+    {
+        if (processing_times_.empty()) {
+            return;
+        }
+        
+        double sum = std::accumulate(processing_times_.begin(), processing_times_.end(), 0.0);
+        double mean = sum / processing_times_.size();
+        
+        double sq_sum = std::inner_product(processing_times_.begin(), processing_times_.end(), 
+                                          processing_times_.begin(), 0.0);
+        double stdev = std::sqrt(sq_sum / processing_times_.size() - mean * mean);
+        
+        double min_time = *std::min_element(processing_times_.begin(), processing_times_.end());
+        double max_time = *std::max_element(processing_times_.begin(), processing_times_.end());
+        
+        RCLCPP_INFO(get_logger(), "============================================================");
+        RCLCPP_INFO(get_logger(), "COST MODULE NODE - Processing Time Statistics");
+        RCLCPP_INFO(get_logger(), "  Frames processed: %zu", frame_count_);
+        RCLCPP_INFO(get_logger(), "  Mean: %.2f ms", mean);
+        RCLCPP_INFO(get_logger(), "  Std:  %.2f ms", stdev);
+        RCLCPP_INFO(get_logger(), "  Min:  %.2f ms", min_time);
+        RCLCPP_INFO(get_logger(), "  Max:  %.2f ms", max_time);
+        RCLCPP_INFO(get_logger(), "============================================================");
+    }
 };
 
 int main(int argc, char** argv)

@@ -2,6 +2,10 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <memory>
 #include <string>
+#include <chrono>
+#include <vector>
+#include <numeric>
+#include <cmath>
 
 using namespace std::chrono_literals;
 
@@ -9,7 +13,7 @@ class SurfaceNormalEstimation : public rclcpp::Node
 {
 public:
     SurfaceNormalEstimation()
-        : Node("surface_normal_estimation")
+        : Node("surface_normal_estimation"), frame_count_(0)
     {
         // ROS 2 QoS settings - matching streaming data pattern
         rclcpp::QoS qos(rclcpp::KeepLast(10));
@@ -32,7 +36,13 @@ public:
                 {0.000000e+00, 0.000000e+00, 1.000000e+00}
             }};
 
-
+        // Initialize timing statistics
+        processing_times_.reserve(100);
+        
+        // Create timer for periodic statistics logging (every 10 seconds)
+        stats_timer_ = this->create_wall_timer(
+            std::chrono::seconds(10),
+            std::bind(&SurfaceNormalEstimation::logTimingStats, this));
 
         // Subscribe to sync_depth topic
         depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
@@ -55,9 +65,16 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr normal_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr normal_viz_pub_;
+    rclcpp::TimerBase::SharedPtr stats_timer_;
+    
+    // Timing statistics
+    std::vector<double> processing_times_;
+    size_t frame_count_;
 
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
+        // Start timing
+        auto start_time = std::chrono::high_resolution_clock::now();
         RCLCPP_INFO(get_logger(), "Received depth image: %dx%d", msg->width, msg->height);
 
         // Extract depth data from the message
@@ -132,7 +149,44 @@ private:
 
         normal_viz_pub_->publish(viz_msg);
 
+        // Calculate and store processing time
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+        double processing_time_ms = duration.count() / 1000.0;
+        
+        processing_times_.push_back(processing_time_ms);
+        if (processing_times_.size() > 100) {
+            processing_times_.erase(processing_times_.begin());
+        }
+        frame_count_++;
+
         RCLCPP_INFO(get_logger(), "Published raw and visualization normals: %dx%d", width, height);
+    }
+    
+    void logTimingStats()
+    {
+        if (processing_times_.empty()) {
+            return;
+        }
+        
+        double sum = std::accumulate(processing_times_.begin(), processing_times_.end(), 0.0);
+        double mean = sum / processing_times_.size();
+        
+        double sq_sum = std::inner_product(processing_times_.begin(), processing_times_.end(), 
+                                          processing_times_.begin(), 0.0);
+        double stdev = std::sqrt(sq_sum / processing_times_.size() - mean * mean);
+        
+        double min_time = *std::min_element(processing_times_.begin(), processing_times_.end());
+        double max_time = *std::max_element(processing_times_.begin(), processing_times_.end());
+        
+        RCLCPP_INFO(get_logger(), "============================================================");
+        RCLCPP_INFO(get_logger(), "SURFACE NORMAL NODE - Processing Time Statistics");
+        RCLCPP_INFO(get_logger(), "  Frames processed: %zu", frame_count_);
+        RCLCPP_INFO(get_logger(), "  Mean: %.2f ms", mean);
+        RCLCPP_INFO(get_logger(), "  Std:  %.2f ms", stdev);
+        RCLCPP_INFO(get_logger(), "  Min:  %.2f ms", min_time);
+        RCLCPP_INFO(get_logger(), "  Max:  %.2f ms", max_time);
+        RCLCPP_INFO(get_logger(), "============================================================");
     }
 
     std::vector<std::vector<std::vector<float>>> SNE(const std::vector<std::vector<float>> &depth_image, int height, int width)
