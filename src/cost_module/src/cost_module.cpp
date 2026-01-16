@@ -48,9 +48,9 @@ public:
         publish_costmap_visualizations_ = this->get_parameter("costmap.publish_visualizations").as_bool();
         
         //! Need params for dilation 
-        this->declare_parameter("costmap.segmentation.dilation_enabled", false);
-        this->declare_parameter("costmap.segmentation.dilation_kernel_size", 3);
-        this->declare_parameter("costmap.segmentation.dilation_min_confidence", 0.7);
+        this->declare_parameter("costmap.segmentation_costmap.dilation_enabled", false);
+        this->declare_parameter("costmap.segmentation_costmap.dilation_kernel_size", 3);
+        this->declare_parameter("costmap.segmentation_costmap.dilation_min_confidence", 0.7);
         this->declare_parameter("costmap.combined_costmap.weights.sne", 1.0);
         this->declare_parameter("costmap.combined_costmap.weights.segmentation", 0.0);
         this->declare_parameter("costmap.combined_costmap.weights.roughness", 0.0);
@@ -62,9 +62,9 @@ public:
         roughness_dilate_enabled_ = this->get_parameter("costmap.roughness_costmap.dilation_enabled").as_bool();
         roughness_dilate_iterations_ = this->get_parameter("costmap.roughness_costmap.dilation_iterations").as_int();
 
-        dilation_enabled_ = this->get_parameter("costmap.segmentation.dilation_enabled").as_bool();
-        dilation_kernel_size_ = this->get_parameter("costmap.segmentation.dilation_kernel_size").as_int();
-        dilation_min_confidence_ = this->get_parameter("costmap.segmentation.dilation_min_confidence").as_double();
+        dilation_enabled_ = this->get_parameter("costmap.segmentation_costmap.dilation_enabled").as_bool();
+        dilation_kernel_size_ = this->get_parameter("costmap.segmentation_costmap.dilation_kernel_size").as_int();
+        dilation_min_confidence_ = this->get_parameter("costmap.segmentation_costmap.dilation_min_confidence").as_double();
         weight_sne_ = this->get_parameter("costmap.combined_costmap.weights.sne").as_double();
         weight_segmentation_ = this->get_parameter("costmap.combined_costmap.weights.segmentation").as_double();
         weight_roughness_ = this->get_parameter("costmap.combined_costmap.weights.roughness").as_double();
@@ -222,9 +222,9 @@ public:
         // Create service client
         trigger_sync_client_ = this->create_client<interfaces::srv::TriggerSync>("trigger_sync");
         
-        // Create timer that runs every 50ms
+        // Create timer that runs every 20ms
         timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(50),
+            std::chrono::milliseconds(20),
             std::bind(&Costmaps::timerCallback, this)
         );
 
@@ -756,11 +756,7 @@ private:
                 filled_cells++;
             }
         }
-        
-        RCLCPP_INFO(this->get_logger(), 
-                    "Dilation filled %d unknown cells (kernel_size=%d)", 
-                    filled_cells, kernel_size);
-        
+                
         return dilated_costmap;
     }
 
@@ -1061,7 +1057,7 @@ private:
         return points_with_normals;
     }
 
-     // roughness cost function
+    // roughness cost function
     std::vector<float> computeGradientTraversabilityCost(const std::vector<float>& theta_grid,
                                                      int height, int width) 
     {
@@ -1825,6 +1821,9 @@ private:
             case CostmapType::COMBINED:
                 return {costmap_combined_pub_, costmap_combined_viz_pub_, output_resolution_};
         }
+        //Should never happen, but required to satisfy compiler
+        RCLCPP_FATAL(this->get_logger(), "Invalid CostmapType passed to getCostmapPublishers()");
+        throw std::runtime_error("Invalid CostmapType");
     }
 
     std::string getCostmapTypeName(CostmapType type)
