@@ -40,7 +40,7 @@
     #! Segmentation parameters
     segmentation:
       model:
-        model_dir: 'models/TAMT.pt' # Relative to workspace root "/home/spacerob/tamt/src/terrain_segmentation/models/TAMT.pt"
+        model_dir: 'TAMT.pt' # Relative to models folder in terrain_segmentation package
         device: '0'  # Device to use: 0, 1, 2, etc., 'cpu'
       
       inference:

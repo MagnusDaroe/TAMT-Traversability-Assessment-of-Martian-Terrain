@@ -92,7 +92,7 @@ class TAMTSegmentationNode(Node):
                 possible_paths = [
                     model_path,  
                     os.path.join(os.getcwd(), model_path),  # Relative to current dir
-                    os.path.join(os.path.expanduser('~/tamt/src/terrain_segmentation'), model_path),  # Relative to package
+                    os.path.join(os.path.expanduser('~/tamt/src/terrain_segmentation/models'), model_path),  # Relative to package
                 ]
                 
                 for path in possible_paths:
