@@ -1061,7 +1061,7 @@ private:
         return points_with_normals;
     }
 
-    // roughness cost function
+     // roughness cost function
     std::vector<float> computeGradientTraversabilityCost(const std::vector<float>& theta_grid,
                                                      int height, int width) 
     {
@@ -1072,10 +1072,10 @@ private:
              scaled_image = dilate(scaled_image, height, width, roughness_dilate_iterations_, false);
         }
         std::vector<float> gradient = gradient_magnitude(scaled_image, height, width);
-        gradient = mean_within_radius(dilated_gradient, height, width, 1);
+        gradient = mean_within_radius(gradient, height, width, 1);
         
         if (roughness_dilate_enabled_) { 
-            gradient = dilate(dilated_gradient, height, width, roughness_dilate_iterations_, true);
+            gradient = dilate(gradient, height, width, roughness_dilate_iterations_, true);
         }
             
         std::vector<float> scaled_gradient = sigmoid_scaling(gradient, 40, 0.06, 0, 255);
