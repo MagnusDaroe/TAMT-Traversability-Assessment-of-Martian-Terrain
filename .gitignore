@@ -17,3 +17,6 @@ tempCodeRunnerFile.*
 # Python bytecode
 __pycache__/
 *.pyc
+
+
+src/sync_pkg/frame_*/
