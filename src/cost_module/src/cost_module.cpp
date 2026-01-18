@@ -250,7 +250,7 @@ public:
                     forward_ray_rover.x(), forward_ray_rover.y(), forward_ray_rover.z());
 
         // Initialize timing statistics
-        processing_times_.reserve(100);
+        processing_times_.reserve(1000);
         
         // Create timer for periodic statistics logging (every 10 seconds)
         stats_timer_ = this->create_wall_timer(
@@ -276,8 +276,7 @@ private:
 
     void timerCallback()
     {
-        // Start timing
-        auto start_time = std::chrono::high_resolution_clock::now();
+        
         
         // Early return if data not ready
         if (!new_sne_data_ || !new_segmentation_mask_data_)
@@ -290,7 +289,8 @@ private:
             RCLCPP_WARN(this->get_logger(), "Pointcloud not yet received, skipping processing");
             return;
         }
-        
+        // Start timing
+        auto start_time = std::chrono::high_resolution_clock::now();
         rclcpp::Time timestamp = this->now();
         
         // Transform pointcloud to rover frame
@@ -364,7 +364,7 @@ private:
         double processing_time_ms = duration.count() / 1000.0;
         
         processing_times_.push_back(processing_time_ms);
-        if (processing_times_.size() > 100) {
+        if (processing_times_.size() > 1000) {
             processing_times_.erase(processing_times_.begin());
         }
         frame_count_++;

@@ -31,7 +31,7 @@ def generate_launch_description():
         name='surface_normal_estimator',
         namespace='tamt',
         parameters=[config_file],
-        arguments=['--ros-args', '--log-level', 'INFO'],
+        arguments=['--ros-args', '--log-level', 'WARN'],
         output='screen'
     )
 
@@ -52,7 +52,7 @@ def generate_launch_description():
     # 4. Cost module tester
     cost_module_tester = Node(
         package='cost_module',
-        executable='test_costmodule.py',
+        executable='test_costmodule_capture.py',
         name='cost_module_tester',
         namespace='tamt',
         parameters=[config_file],

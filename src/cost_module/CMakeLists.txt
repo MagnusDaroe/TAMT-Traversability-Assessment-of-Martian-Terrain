@@ -60,6 +60,8 @@ install(TARGETS
 install(PROGRAMS
   scripts/test_costmodule.py
   scripts/test_costmodule_all.py
+  scripts/test_costmodule_capture.py
+  scripts/test_costmodule_gt.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

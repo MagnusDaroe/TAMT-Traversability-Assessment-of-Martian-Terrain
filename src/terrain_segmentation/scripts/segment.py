@@ -42,7 +42,7 @@ class TAMTSegmentationNode(Node):
         self.current_image_header = None
         
         # Timing statistics
-        self.processing_times = deque(maxlen=100)  # Store last 100 timings
+        self.processing_times = deque(maxlen=1000)  # Store last 100 timings
         self.frame_count = 0
         
         # Create timer for periodic statistics logging (every 10 seconds)

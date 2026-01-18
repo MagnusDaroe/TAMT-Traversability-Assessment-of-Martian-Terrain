@@ -37,7 +37,7 @@ public:
             }};
 
         // Initialize timing statistics
-        processing_times_.reserve(100);
+        processing_times_.reserve(1000);
         
         // Create timer for periodic statistics logging (every 10 seconds)
         stats_timer_ = this->create_wall_timer(

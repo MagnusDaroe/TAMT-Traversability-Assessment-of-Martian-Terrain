@@ -78,3 +78,8 @@
       sand: 0.3
       rocks: 0.9
       hole: 1.0
+      unknown: 1.0
+    
+    #! Ground truth testing parameters
+    gt:
+      flip_normals: true  # Flip GT normals if coordinate system differs from computed normals
