@@ -222,11 +222,16 @@ class GroundTruthCostmapCaptureNode(Node):
         try:
             normals = np.load(frame['normals_path'])  # Shape should be (H, W, 3) or (H, W, 4)
             
-            # If normals have 4 channels (RGBA), extract only RGB (first 3 channels)
-            if normals.shape[2] == 4:
+            # Handle 4-channel normals (RGBA) by taking only first 3 channels
+            if normals.ndim == 3 and normals.shape[2] == 4:
                 normals = normals[:, :, :3]
-            elif normals.shape[2] != 3:
-                raise ValueError(f"Expected 3 or 4 channels, got {normals.shape[2]}")
+            
+            if normals.ndim != 3 or normals.shape[2] != 3:
+                raise ValueError(f"Expected (H, W, 3) normals, got shape {normals.shape}")
+            
+            # Rotate normals using the frame's quaternion
+            quat = frame['quat']  # [x, y, z, w]
+            normals = self.rotate_normals_by_quaternion(normals, quat)
                 
         except Exception as e:
             self.get_logger().error(f'Failed to load normals: {frame["normals_path"]}: {e}')
@@ -339,6 +344,45 @@ class GroundTruthCostmapCaptureNode(Node):
         # Save image as grayscale
         cv2.imwrite(str(filepath), img)
         self.get_logger().debug(f'Saved {costmap_type}: {filename}')
+    
+    def rotate_normals_by_quaternion(self, normals, quat):
+        """
+        Rotate surface normals by a quaternion.
+        
+        Args:
+            normals: numpy array of shape (H, W, 3) with normal vectors
+            quat: quaternion [x, y, z, w]
+        
+        Returns:
+            np.ndarray: Rotated normals of shape (H, W, 3)
+        """
+        from scipy.spatial.transform import Rotation
+        
+        # Create rotation object from quaternion [x, y, z, w]
+        rotation = Rotation.from_quat(quat)
+        
+        # Apply additional rotations: -90 deg around Z, then 90 deg around X
+        rot_z = Rotation.from_euler('z', -90, degrees=True)
+        rot_x = Rotation.from_euler('x', 90, degrees=True)
+        rotx_tilt = Rotation.from_euler('x', 20, degrees=True)
+        
+        # Combine rotations: apply quaternion rotation first, then z, then x
+        combined_rotation = rotx_tilt * rot_x * rot_z * rotation
+        
+        # Get the combined rotation matrix
+        rot_matrix = combined_rotation.as_matrix()
+        
+        # Reshape normals to (N, 3) for batch rotation
+        h, w, _ = normals.shape
+        normals_flat = normals.reshape(-1, 3)
+        
+        # Apply rotation: each normal is rotated by the rotation matrix
+        rotated_normals_flat = normals_flat @ rot_matrix.T
+        
+        # Reshape back to (H, W, 3)
+        rotated_normals = rotated_normals_flat.reshape(h, w, 3)
+        
+        return rotated_normals
     
     def yolo_to_segmentation_mask(self, yolo_label_path, width, height):
         """
