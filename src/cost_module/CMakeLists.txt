@@ -61,6 +61,14 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(
+  PROGRAMS
+    scripts/stitched_costmap.py
+    scripts/frame_gated_sync_node.py
+    scripts/stitched_costmap_new.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # # Install Python scripts
 # install(PROGRAMS
 #   #scripts/image_saver.py #example script, uncomment if needed
